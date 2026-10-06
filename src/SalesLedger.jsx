@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Trash2, Pencil, Search, Folder, FolderOpen, Calendar, Clock, User, ChevronDown, ChevronRight, UserCheck, X, AlertTriangle } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { Trash2, Pencil, Search, Folder, FolderOpen, Calendar, Clock, User, ChevronDown, ChevronRight, UserCheck, X, Image as ImageIcon } from 'lucide-react';
 
 export default function SalesLedger({ products, customers, fetchProducts, fetchCustomers, supabase, currentUser, activeBranchId }) {
   // Staging / Accumulator Cart State
@@ -15,13 +15,17 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
   // Independent Sales History State
   const [salesHistory, setSalesHistory] = useState([]);
 
-  // Editing Sale State (Tracks if we are modifying an existing sale)
+  // Editing Sale State
   const [editingSale, setEditingSale] = useState(null);
 
-  // Adding Item State
+  // Adding Item State (with new Search functionality)
+  const [productSearchTerm, setProductSearchTerm] = useState('');
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [cartProductId, setCartProductId] = useState('');
   const [cartQty, setCartQty] = useState('1');
   const [customPrice, setCustomPrice] = useState('');
+  
+  const dropdownRef = useRef(null); // Ref for closing dropdown on outside click
 
   // Form State
   const [ledgerForm, setLedgerForm] = useState({ 
@@ -40,10 +44,32 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   }, []);
 
-  // State for collapsible month folders (Current month expanded by default)
+  // State for collapsible month folders
   const [expandedMonths, setExpandedMonths] = useState({ [currentMonthKey]: true });
 
-  // Fetch sales directly from customer_history table (Filtered by Role & Branch)
+  // Handle clicking outside of the searchable dropdown to close it
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setIsDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Optimized Search Filter (Limits to 50 results for massive 100k+ catalogs)
+  const filteredDropdownProducts = useMemo(() => {
+    const activeProducts = products.filter(p => !p.is_archived);
+    if (!productSearchTerm) return activeProducts.slice(0, 50);
+    
+    const lowercasedTerm = productSearchTerm.toLowerCase();
+    return activeProducts
+      .filter(p => p.name.toLowerCase().includes(lowercasedTerm) || (p.batch_reference && p.batch_reference.toLowerCase().includes(lowercasedTerm)))
+      .slice(0, 50); // Important: Prevents DOM freezing with huge inventories
+  }, [products, productSearchTerm]);
+
+  // Fetch sales history
   const fetchSalesHistory = async () => {
     try {
       let query = supabase
@@ -55,25 +81,19 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
         query = query.eq('staff_id', currentUser?.id);
       }
 
-      // Filter by Branch Context
       if (activeBranchId && activeBranchId !== 'ALL') {
         query = query.eq('branch_id', activeBranchId);
       }
 
       const { data, error } = await query;
-
-      if (!error && data) {
-        setSalesHistory(data);
-      }
+      if (!error && data) setSalesHistory(data);
     } catch (err) {
       console.error('Error fetching sales history:', err);
     }
   };
 
   useEffect(() => {
-    if (currentUser) {
-      fetchSalesHistory();
-    }
+    if (currentUser) fetchSalesHistory();
   }, [currentUser, activeBranchId]);
 
   // Sync cart to local storage
@@ -82,23 +102,14 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
   }, [cartItems]);
 
   const toggleMonth = (monthKey) => {
-    setExpandedMonths(prev => ({
-      ...prev,
-      [monthKey]: !prev[monthKey]
-    }));
+    setExpandedMonths(prev => ({ ...prev, [monthKey]: !prev[monthKey] }));
   };
 
-  const handleProductSelect = (e) => {
-    const prodId = e.target.value;
-    setCartProductId(prodId);
-    if (prodId) {
-      const selectedProd = products.find(p => String(p.id) === String(prodId));
-      if (selectedProd) {
-        setCustomPrice(selectedProd.price.toString());
-      }
-    } else {
-      setCustomPrice('');
-    }
+  const selectProductForCart = (prod) => {
+    setCartProductId(prod.id);
+    setCustomPrice(prod.price.toString());
+    setProductSearchTerm(prod.name);
+    setIsDropdownOpen(false);
   };
 
   const handleAddToCart = () => {
@@ -126,13 +137,15 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
         name: prod.name,
         batch: prod.batch_reference || 'N/A',
         price: priceToUse,
-        qty: qty
+        qty: qty,
+        image_url: prod.image_url // Saves the thumbnail image URL
       }]);
     }
 
     setCartProductId('');
     setCartQty('1');
     setCustomPrice('');
+    setProductSearchTerm(''); // Reset search input for the next item
   };
 
   const handleRemoveFromCart = (index) => {
@@ -157,7 +170,6 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
   const paidAmount = ledgerForm.initialPaid !== '' ? parseFloat(ledgerForm.initialPaid) : cartTotal;
   const remainingDebt = Math.max(0, cartTotal - paidAmount);
 
-  // Helper: Revert stock and customer debt for a given sale
   const revertSaleStockAndDebt = async (sale) => {
     if (sale.items && Array.isArray(sale.items)) {
       for (const item of sale.items) {
@@ -170,14 +182,10 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
 
           if (!fetchErr && prodData) {
             const restoredQty = (prodData.quantity || 0) + item.qty;
-            const { error: updateErr } = await supabase
+            await supabase
               .from('products')
               .update({ quantity: restoredQty, stock_status: restoredQty > 0 })
               .eq('id', item.productId);
-
-            if (updateErr) {
-              console.error(`Failed to restore stock for product ${item.productId}:`, updateErr);
-            }
           }
         }
       }
@@ -203,7 +211,6 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
     }
   };
 
-  // Deduct Stock Levels in Database
   const deductStockForCart = async (items) => {
     for (const item of items) {
       if (item.productId) {
@@ -213,31 +220,18 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
           .eq('id', item.productId)
           .single();
 
-        if (fetchErr) {
-          console.error(`Error fetching current stock for item ${item.productId}:`, fetchErr);
-          continue;
-        }
-
+        if (fetchErr) continue;
         const currentQty = freshProd ? freshProd.quantity : 0;
         const newStock = Math.max(0, currentQty - item.qty);
 
-        const { error: stockUpdateErr } = await supabase
+        await supabase
           .from('products')
-          .update({ 
-            quantity: newStock, 
-            stock_status: newStock > 0 
-          })
+          .update({ quantity: newStock, stock_status: newStock > 0 })
           .eq('id', item.productId);
-
-        if (stockUpdateErr) {
-          console.error(`Failed to update stock for item ${item.productId}:`, stockUpdateErr);
-          alert(`Avertissement Stock: Impossible de réduire le stock pour ${item.name}. Vérifiez les permissions RLS Supabase.`);
-        }
       }
     }
   };
 
-  // Finalize Sale (Handles both New Sales and Editing Existing Sales)
   const handleFinalizeSale = async (e) => {
     e.preventDefault();
     if (cartItems.length === 0) {
@@ -250,9 +244,7 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
     if (!confirmSale) return;
 
     try {
-      if (editingSale) {
-        await revertSaleStockAndDebt(editingSale);
-      }
+      if (editingSale) await revertSaleStockAndDebt(editingSale);
 
       const balance = remainingDebt;
       const goodsDescription = cartItems.map(item => `${item.qty}x ${item.name} (${item.batch}) @ ${item.price} FCFA`).join(', ');
@@ -262,8 +254,6 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
       const currentTime = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
       const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
       const monthLabel = now.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
-
-      // Determine correct branch_id (null if ALL/HQ, otherwise specific branch)
       const targetBranchId = (!activeBranchId || activeBranchId === 'ALL') ? null : activeBranchId;
 
       let targetCustomerId = null;
@@ -288,11 +278,7 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
           const currentDebt = parseFloat(existingCust.totalDebt) || 0;
           const newTotalDebt = currentDebt + balance;
           
-          const { error: updateErr } = await supabase.from('customers').update({
-            total_debt: newTotalDebt
-          }).eq('id', targetCustomerId);
-
-          if (updateErr) throw updateErr;
+          await supabase.from('customers').update({ total_debt: newTotalDebt }).eq('id', targetCustomerId);
         }
       }
 
@@ -310,31 +296,21 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
         total: cartTotal,
         paid: paidAmount,
         type: 'Sale',
-        items: cartItems,
-        branch_id: targetBranchId
+        items: cartItems, // Save the items including image_url
+        branch_id: targetBranchId,
+        customer_name: customerDisplayName,
+        date: editingSale ? (editingSale.date || currentDate) : currentDate,
+        time: editingSale ? (editingSale.time || currentTime) : currentTime,
+        month_key: editingSale ? (editingSale.month_key || monthKey) : monthKey,
+        month_label: editingSale ? (editingSale.month_label || monthLabel) : monthLabel
       };
 
-      try {
-        salePayload.customer_name = customerDisplayName;
-        salePayload.date = editingSale ? (editingSale.date || currentDate) : currentDate;
-        salePayload.time = editingSale ? (editingSale.time || currentTime) : currentTime;
-        salePayload.month_key = editingSale ? (editingSale.month_key || monthKey) : monthKey;
-        salePayload.month_label = editingSale ? (editingSale.month_label || monthLabel) : monthLabel;
-      } catch (e) {}
-
       if (editingSale) {
-        const { error: updateHistErr } = await supabase
-          .from('customer_history')
-          .update(salePayload)
-          .eq('id', editingSale.id);
-
-        if (updateHistErr) throw updateHistErr;
+        await supabase.from('customer_history').update(salePayload).eq('id', editingSale.id);
       } else {
-        const { error: histErr } = await supabase.from('customer_history').insert([salePayload]);
-        if (histErr) throw histErr;
+        await supabase.from('customer_history').insert([salePayload]);
       }
 
-      // Deduct product stock from DB
       await deductStockForCart(cartItems);
 
       setLedgerForm({ customerId: 'walkin', newName: '', newPhone: '', initialPaid: '' });
@@ -351,35 +327,27 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
     }
   };
 
-  // Admin Delete Sale Action
   const handleDeleteSale = async (sale) => {
-    const confirmDelete = window.confirm(
-      `⚠️ ATTENTION : Voulez-vous vraiment SUPPRIMER la vente de ${sale.goods} ?\n\n- Les articles seront remis en stock.\n- La dette éventuelle du client sera ajustée.`
-    );
+    const confirmDelete = window.confirm(`⚠️ ATTENTION : Voulez-vous vraiment SUPPRIMER la vente de ${sale.goods} ?\n\n- Les articles seront remis en stock.`);
     if (!confirmDelete) return;
 
     try {
       await revertSaleStockAndDebt(sale);
-      
-      const { error: delErr } = await supabase.from('customer_history').delete().eq('id', sale.id);
-      if (delErr) throw delErr;
-
-      alert("Vente supprimée et articles remis en stock avec succès !");
+      await supabase.from('customer_history').delete().eq('id', sale.id);
+      alert("Vente supprimée avec succès !");
       await fetchProducts();
       await fetchCustomers();
       await fetchSalesHistory();
     } catch (err) {
-      alert(`Erreur lors de la suppression : ${err.message}`);
+      alert(`Erreur : ${err.message}`);
     }
   };
 
-  // Prepare sale for inline editing
   const handleEditSale = (sale) => {
     if (!sale.items || sale.items.length === 0) {
-      alert("Impossible de modifier : le détail des articles n'est pas disponible pour cette ancienne transaction.");
+      alert("Impossible de modifier : le détail n'est pas disponible pour cette ancienne transaction.");
       return;
     }
-
     setEditingSale(sale);
     setCartItems(sale.items);
     setLedgerForm({
@@ -388,7 +356,6 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
       newPhone: '',
       initialPaid: sale.paid?.toString() || ''
     });
-
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -399,12 +366,8 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
     localStorage.removeItem('akuDonCart');
   };
 
-  // Helper to resolve Month Key & Label dynamically
   const getMonthGroup = (item) => {
-    if (item.month_key && item.month_label) {
-      return { key: item.month_key, label: item.month_label };
-    }
-    
+    if (item.month_key && item.month_label) return { key: item.month_key, label: item.month_label };
     let dateObj = new Date(item.created_at || item.date);
     if (isNaN(dateObj.getTime()) && typeof item.date === 'string') {
       const parts = item.date.split(/[\/\-]/);
@@ -412,24 +375,19 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
         dateObj = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
       }
     }
-
     if (!isNaN(dateObj.getTime())) {
-      const key = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`;
-      const label = dateObj.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
-      return { key, label };
+      return { 
+        key: `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}`, 
+        label: dateObj.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }) 
+      };
     }
-
     return { key: currentMonthKey, label: 'Mois En Cours' };
   };
 
-  // Process & Filter Sales History
   const filteredSales = useMemo(() => {
     return salesHistory.map(item => {
       const cust = customers.find(c => String(c.id) === String(item.customer_id));
-      return {
-        ...item,
-        displayCustomer: item.customer_name || (cust ? cust.name : 'Client de Passage')
-      };
+      return { ...item, displayCustomer: item.customer_name || (cust ? cust.name : 'Client de Passage') };
     }).filter(item => {
       if (!searchTerm) return true;
       const term = searchTerm.toLowerCase();
@@ -437,32 +395,20 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
         (item.goods && item.goods.toLowerCase().includes(term)) ||
         (item.displayCustomer && item.displayCustomer.toLowerCase().includes(term)) ||
         (item.batch && item.batch.toLowerCase().includes(term)) ||
-        (item.date && item.date.includes(term)) ||
-        (item.time && item.time.includes(term)) ||
         (item.staff_name && item.staff_name.toLowerCase().includes(term))
       );
     });
   }, [salesHistory, customers, searchTerm]);
 
-  // Group History items into Folders by Month
   const groupedSalesByMonth = useMemo(() => {
     const groups = {};
     filteredSales.forEach(item => {
       const { key, label } = getMonthGroup(item);
-
-      if (!groups[key]) {
-        groups[key] = {
-          label: label,
-          items: [],
-          totalSales: 0,
-          totalPaid: 0
-        };
-      }
+      if (!groups[key]) groups[key] = { label, items: [], totalSales: 0, totalPaid: 0 };
       groups[key].items.push(item);
       groups[key].totalSales += item.total || 0;
       groups[key].totalPaid += item.paid || 0;
     });
-
     return groups;
   }, [filteredSales]);
 
@@ -477,19 +423,13 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
           )}
         </h3>
 
-        {/* Edit Banner Notification */}
         {editingSale && (
           <div className="bg-amber-50 border border-amber-300 p-3 rounded-lg flex items-center justify-between text-amber-900 text-xs">
             <div>
               <p className="font-bold">✏️ Modification de la vente #{editingSale.id}</p>
               <p className="text-[10px] text-amber-700">Vendeur d'origine : <strong>{editingSale.staff_name || 'Inconnu'}</strong></p>
             </div>
-            <button
-              type="button"
-              onClick={handleCancelEdit}
-              className="p-1 text-amber-800 hover:bg-amber-200 rounded"
-              title="Annuler la modification"
-            >
+            <button type="button" onClick={handleCancelEdit} className="p-1 text-amber-800 hover:bg-amber-200 rounded">
               <X className="w-4 h-4" />
             </button>
           </div>
@@ -515,83 +455,86 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
           
           {ledgerForm.customerId === 'new' && (
             <div className="space-y-3 p-3 bg-gray-50 rounded-lg border">
-              <input 
-                type="text" 
-                placeholder="Nom du Client" 
-                value={ledgerForm.newName} 
-                onChange={e => setLedgerForm({...ledgerForm, newName: e.target.value})} 
-                className="w-full border p-2 text-xs rounded-lg bg-white" 
-              />
-              <input 
-                type="text" 
-                placeholder="Numéro de Téléphone (+225...)" 
-                value={ledgerForm.newPhone} 
-                onChange={e => setLedgerForm({...ledgerForm, newPhone: e.target.value})} 
-                className="w-full border p-2 text-xs rounded-lg bg-white" 
-              />
+              <input type="text" placeholder="Nom du Client" value={ledgerForm.newName} onChange={e => setLedgerForm({...ledgerForm, newName: e.target.value})} className="w-full border p-2 text-xs rounded-lg bg-white" />
+              <input type="text" placeholder="Numéro de Téléphone (+225...)" value={ledgerForm.newPhone} onChange={e => setLedgerForm({...ledgerForm, newPhone: e.target.value})} className="w-full border p-2 text-xs rounded-lg bg-white" />
             </div>
           )}
 
           <div className="bg-gray-50 p-3.5 rounded-xl border space-y-3">
             <label className="text-[10px] text-gray-500 font-bold uppercase block">
-              Sélectionner les articles à ajouter
+              Rechercher & Ajouter des Articles
             </label>
             
             <div className="space-y-2">
-              <select 
-                value={cartProductId} 
-                onChange={handleProductSelect} 
-                className="w-full border p-2 text-xs rounded-lg bg-white"
-              >
-                <option value="">-- Choisir un produit actif --</option>
-                {products.filter(p => !p.is_archived).map(p => (
-                  <option key={p.id} value={p.id}>
-                    [{p.batch_reference || 'N/A'}] {p.name} - {p.price?.toLocaleString()} FCFA (Stock: {p.quantity})
-                  </option>
-                ))}
-              </select>
+              {/* SEARCHABLE CUSTOM DROPDOWN (100K+ Optimized) */}
+              <div className="relative" ref={dropdownRef}>
+                <input
+                  type="text"
+                  placeholder="Tapez pour rechercher un produit..."
+                  value={productSearchTerm}
+                  onChange={(e) => {
+                    setProductSearchTerm(e.target.value);
+                    setIsDropdownOpen(true);
+                    setCartProductId(''); // Clear selected ID if user starts typing again
+                    setCustomPrice('');
+                  }}
+                  onFocus={() => setIsDropdownOpen(true)}
+                  className="w-full border p-2 text-xs rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-orange-500"
+                />
+                
+                {isDropdownOpen && (
+                  <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-xl max-h-60 overflow-y-auto">
+                    {filteredDropdownProducts.length > 0 ? (
+                      filteredDropdownProducts.map(p => (
+                        <div
+                          key={p.id}
+                          onClick={() => selectProductForCart(p)}
+                          className="p-2 hover:bg-orange-50 cursor-pointer flex items-center border-b border-gray-50 last:border-0 transition-colors"
+                        >
+                          {p.image_url ? (
+                            <img src={p.image_url} alt={p.name} className="w-8 h-8 rounded-md object-cover border border-gray-200 mr-2.5 flex-shrink-0" />
+                          ) : (
+                            <div className="w-8 h-8 rounded-md bg-gray-100 border border-gray-200 mr-2.5 flex items-center justify-center flex-shrink-0">
+                              <ImageIcon className="w-4 h-4 text-gray-400" />
+                            </div>
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <div className="font-bold text-xs text-gray-800 truncate">{p.name}</div>
+                            <div className="text-[9px] text-gray-500">[{p.batch_reference || 'N/A'}] - <span className="font-semibold text-emerald-600">{p.price?.toLocaleString()} FCFA</span> (Stock: {p.quantity})</div>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="p-3 text-xs text-gray-400 text-center">Aucun produit trouvé...</div>
+                    )}
+                  </div>
+                )}
+              </div>
 
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-[9px] text-gray-400 font-bold block mb-0.5">Quantité</label>
-                  <input 
-                    type="number" 
-                    min="1" 
-                    placeholder="Qté" 
-                    value={cartQty} 
-                    onChange={e => setCartQty(e.target.value)} 
-                    className="w-full border p-2 text-xs rounded-lg bg-white text-center font-bold" 
-                  />
+                  <input type="number" min="1" placeholder="Qté" value={cartQty} onChange={e => setCartQty(e.target.value)} className="w-full border p-2 text-xs rounded-lg bg-white text-center font-bold" />
                 </div>
                 <div>
                   <label className="text-[9px] text-orange-600 font-bold block mb-0.5">Prix Unitaire (FCFA)</label>
-                  <input 
-                    type="number" 
-                    placeholder="Prix" 
-                    value={customPrice} 
-                    onChange={e => setCustomPrice(e.target.value)} 
-                    className="w-full border border-orange-300 p-2 text-xs rounded-lg bg-white text-right font-bold text-orange-700" 
-                  />
+                  <input type="number" placeholder="Prix" value={customPrice} onChange={e => setCustomPrice(e.target.value)} className="w-full border border-orange-300 p-2 text-xs rounded-lg bg-white text-right font-bold text-orange-700" />
                 </div>
               </div>
 
-              <button 
-                type="button" 
-                onClick={handleAddToCart} 
-                className="w-full bg-orange-600 hover:bg-orange-700 text-white text-xs font-bold py-2 px-3 rounded-lg uppercase tracking-wider transition-colors"
-              >
+              <button type="button" onClick={handleAddToCart} disabled={!cartProductId} className="w-full bg-orange-600 hover:bg-orange-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-xs font-bold py-2 px-3 rounded-lg uppercase tracking-wider transition-colors">
                 + Ajouter au Panier
               </button>
             </div>
 
             {cartItems.length > 0 ? (
-              <div className="mt-3 space-y-2">
+              <div className="mt-4 space-y-2">
                 <p className="text-[10px] font-bold text-gray-400 uppercase">Articles du Panier:</p>
                 <div className="bg-white rounded-lg border overflow-hidden">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-gray-100 text-gray-500 font-bold border-b">
                       <tr>
-                        <th className="p-2">Article</th>
+                        <th className="p-2 w-1/2">Article</th>
                         <th className="p-2 text-center">Qté</th>
                         <th className="p-2 text-right">Prix</th>
                         <th className="p-2 text-center"></th>
@@ -600,25 +543,26 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
                     <tbody className="divide-y divide-gray-100">
                       {cartItems.map((item, index) => (
                         <tr key={index} className="hover:bg-gray-50">
-                          <td className="p-2 font-bold">
-                            {item.name} <span className="text-[9px] text-orange-600 block">({item.batch})</span>
+                          {/* UPDATED: Displays thumbnail directly inside the Cart */}
+                          <td className="p-2">
+                            <div className="flex items-center space-x-2">
+                              {item.image_url ? (
+                                <img src={item.image_url} alt={item.name} className="w-8 h-8 rounded object-cover border border-gray-200 flex-shrink-0" />
+                              ) : (
+                                <div className="w-8 h-8 rounded bg-gray-100 border border-gray-200 flex items-center justify-center flex-shrink-0">
+                                  <ImageIcon className="w-4 h-4 text-gray-300" />
+                                </div>
+                              )}
+                              <div className="font-bold text-gray-800 leading-tight">
+                                {item.name} <span className="text-[9px] text-orange-600 block font-normal">({item.batch})</span>
+                              </div>
+                            </div>
                           </td>
                           <td className="p-2 text-center">
-                            <input 
-                              type="number" 
-                              min="1" 
-                              value={item.qty} 
-                              onChange={(e) => handleUpdateCartItemQty(index, e.target.value)} 
-                              className="w-10 border text-center p-1 rounded font-bold text-xs" 
-                            />
+                            <input type="number" min="1" value={item.qty} onChange={(e) => handleUpdateCartItemQty(index, e.target.value)} className="w-10 border text-center p-1 rounded font-bold text-xs" />
                           </td>
                           <td className="p-2 text-right">
-                            <input 
-                              type="number" 
-                              value={item.price} 
-                              onChange={(e) => handleUpdateCartItemPrice(index, e.target.value)} 
-                              className="w-16 border border-orange-300 text-right p-1 rounded font-bold text-xs text-orange-700" 
-                            />
+                            <input type="number" value={item.price} onChange={(e) => handleUpdateCartItemPrice(index, e.target.value)} className="w-16 border border-orange-300 text-right p-1 rounded font-bold text-xs text-orange-700" />
                           </td>
                           <td className="p-2 text-center">
                             <button type="button" onClick={() => handleRemoveFromCart(index)} className="text-red-500 hover:text-red-700 p-1">
@@ -638,13 +582,7 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
 
           <div>
             <label className="text-[10px] text-gray-400 font-bold block mb-1">Montant Payé Cash (FCFA)</label>
-            <input 
-              type="number" 
-              placeholder={cartTotal > 0 ? `Total: ${cartTotal} FCFA` : "Montant reçu"} 
-              value={ledgerForm.initialPaid} 
-              onChange={e => setLedgerForm({...ledgerForm, initialPaid: e.target.value})} 
-              className="w-full border p-2.5 text-xs rounded-lg font-bold text-green-700" 
-            />
+            <input type="number" placeholder={cartTotal > 0 ? `Total: ${cartTotal} FCFA` : "Montant reçu"} value={ledgerForm.initialPaid} onChange={e => setLedgerForm({...ledgerForm, initialPaid: e.target.value})} className="w-full border p-2.5 text-xs rounded-lg font-bold text-green-700" />
           </div>
 
           {cartItems.length > 0 && (
@@ -666,11 +604,7 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
             </div>
           )}
           
-          <button 
-            type="submit" 
-            disabled={cartItems.length === 0} 
-            className="w-full bg-black hover:bg-gray-800 disabled:bg-gray-300 text-white text-xs py-3 rounded-lg font-bold uppercase tracking-wider transition-colors"
-          >
+          <button type="submit" disabled={cartItems.length === 0} className="w-full bg-black hover:bg-gray-800 disabled:bg-gray-300 text-white text-xs py-3 rounded-lg font-bold uppercase tracking-wider transition-colors">
             {editingSale ? 'Mettre à Jour la Vente' : 'Valider et Enregistrer Vente'}
           </button>
         </form>
@@ -705,96 +639,78 @@ export default function SalesLedger({ products, customers, fetchProducts, fetchC
 
                 return (
                   <div key={monthKey} className="border border-gray-200 rounded-xl overflow-hidden bg-white shadow-sm">
-                    
                     <button 
                       type="button" 
                       onClick={() => toggleMonth(monthKey)}
                       className={`w-full flex items-center justify-between p-3.5 text-left transition-colors ${isOpen ? 'bg-orange-50/60 border-b' : 'bg-gray-50 hover:bg-gray-100'}`}
                     >
                       <div className="flex items-center space-x-2.5">
-                        {isOpen ? (
-                          <FolderOpen className="w-5 h-5 text-orange-600" />
-                        ) : (
-                          <Folder className="w-5 h-5 text-gray-400" />
-                        )}
+                        {isOpen ? <FolderOpen className="w-5 h-5 text-orange-600" /> : <Folder className="w-5 h-5 text-gray-400" />}
                         <div>
-                          <span className="font-black text-xs uppercase text-gray-800 block">
-                            Dossier Ventes : {group.label}
-                          </span>
-                          <span className="text-[10px] text-gray-500 font-medium">
-                            {group.items.length} transaction(s) enregistrée(s)
-                          </span>
+                          <span className="font-black text-xs uppercase text-gray-800 block">Dossier Ventes : {group.label}</span>
+                          <span className="text-[10px] text-gray-500 font-medium">{group.items.length} transaction(s)</span>
                         </div>
                       </div>
 
                       <div className="flex items-center space-x-3">
                         <div className="text-right">
-                          <span className="text-xs font-bold text-gray-700 block">
-                            {group.totalSales.toLocaleString()} FCFA
-                          </span>
-                          <span className="text-[9px] text-green-600 font-bold block">
-                            Encaissement: {group.totalPaid.toLocaleString()} FCFA
-                          </span>
+                          <span className="text-xs font-bold text-gray-700 block">{group.totalSales.toLocaleString()} FCFA</span>
+                          <span className="text-[9px] text-green-600 font-bold block">Encaissement: {group.totalPaid.toLocaleString()} FCFA</span>
                         </div>
                         {isOpen ? <ChevronDown className="w-4 h-4 text-gray-500" /> : <ChevronRight className="w-4 h-4 text-gray-400" />}
                       </div>
                     </button>
 
                     {isOpen && (
-                      <div className="p-3 bg-white space-y-2 max-h-96 overflow-y-auto">
+                      <div className="p-3 bg-white space-y-2 max-h-[30rem] overflow-y-auto">
                         {group.items.map((sale, idx) => (
-                          <div key={idx} className="p-3 rounded-lg border border-gray-100 bg-gray-50/50 hover:bg-white hover:border-orange-200 transition-all text-xs space-y-1.5">
+                          <div key={idx} className="p-3 rounded-lg border border-gray-100 bg-gray-50/50 hover:bg-white hover:border-orange-200 transition-all text-xs space-y-2">
                             
-                            <div className="flex justify-between items-center text-gray-500 text-[10px]">
+                            <div className="flex justify-between items-center text-gray-500 text-[10px] pb-1 border-b border-gray-100">
                               <div className="flex items-center flex-wrap gap-2">
-                                <span className="flex items-center font-bold text-gray-700">
-                                  <Calendar className="w-3 h-3 mr-1 text-orange-500" />
-                                  {sale.date || 'N/A'}
-                                </span>
-                                <span className="flex items-center font-bold text-gray-700">
-                                  <Clock className="w-3 h-3 mr-1 text-orange-500" />
-                                  {sale.time || sale.created_at?.slice(11, 16) || '--:--'}
-                                </span>
-                                <span className="flex items-center font-bold text-gray-700 bg-gray-200 px-2 py-0.5 rounded">
-                                  <UserCheck className="w-3 h-3 mr-1 text-blue-600" />
-                                  {sale.staff_name || 'Vendeur Inconnu'}
-                                </span>
+                                <span className="flex items-center font-bold text-gray-700"><Calendar className="w-3 h-3 mr-1 text-orange-500" />{sale.date || 'N/A'}</span>
+                                <span className="flex items-center font-bold text-gray-700"><Clock className="w-3 h-3 mr-1 text-orange-500" />{sale.time || sale.created_at?.slice(11, 16) || '--:--'}</span>
+                                <span className="flex items-center font-bold text-gray-700 bg-gray-200 px-2 py-0.5 rounded"><UserCheck className="w-3 h-3 mr-1 text-blue-600" />{sale.staff_name || 'Vendeur'}</span>
                               </div>
-                              <span className="flex items-center font-bold text-gray-800 bg-gray-200 px-2 py-0.5 rounded">
-                                <User className="w-3 h-3 mr-1" />
-                                {sale.displayCustomer}
-                              </span>
+                              <span className="flex items-center font-bold text-gray-800 bg-gray-200 px-2 py-0.5 rounded"><User className="w-3 h-3 mr-1" />{sale.displayCustomer}</span>
                             </div>
 
-                            <div className="font-semibold text-gray-800 pl-1">
-                              {sale.goods}
+                            {/* UPDATED: Itemized Breakdown with Thumbnails in History */}
+                            <div className="pt-1">
+                              {sale.items && sale.items.length > 0 ? (
+                                <div className="grid grid-cols-1 gap-2">
+                                  {sale.items.map((item, iIdx) => (
+                                    <div key={iIdx} className="flex items-center space-x-2.5 bg-white p-2 rounded-md border border-gray-100 shadow-sm">
+                                      {item.image_url ? (
+                                        <img src={item.image_url} alt={item.name} className="w-8 h-8 rounded object-cover border border-gray-200 flex-shrink-0" />
+                                      ) : (
+                                        <div className="w-8 h-8 rounded bg-gray-100 border border-gray-200 flex items-center justify-center flex-shrink-0">
+                                          <ImageIcon className="w-3 h-3 text-gray-400" />
+                                        </div>
+                                      )}
+                                      <div className="flex-1 min-w-0">
+                                        <div className="text-[11px] font-bold text-gray-800 truncate">{item.qty}x {item.name}</div>
+                                        <div className="text-[10px] text-gray-500">Lot: {item.batch} • @ {item.price?.toLocaleString()} FCFA</div>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="font-semibold text-gray-800 pl-1">{sale.goods}</div>
+                              )}
                             </div>
 
-                            <div className="flex justify-between items-center pt-1 border-t border-gray-100 text-[11px]">
-                              <span className="text-gray-400 text-[10px]">
-                                Lot: <strong className="text-gray-600">{sale.batch || 'N/A'}</strong>
-                              </span>
+                            <div className="flex justify-between items-center pt-2 mt-1 border-t border-gray-100 text-[11px]">
+                              <span className="text-gray-400 text-[10px]">Total Articles: <strong className="text-gray-600">{sale.qty || '-'}</strong></span>
                               
                               <div className="flex items-center space-x-3">
-                                <span>Total: <strong>{sale.total?.toLocaleString()} FCFA</strong></span>
-                                <span className="text-green-600 font-bold">Payé: {sale.paid?.toLocaleString()} FCFA</span>
+                                <span>Facture: <strong>{sale.total?.toLocaleString()} FCFA</strong></span>
+                                <span className="text-green-600 font-bold bg-green-50 px-2 py-0.5 rounded">Payé: {sale.paid?.toLocaleString()} FCFA</span>
                                 
                                 {currentUser?.role === 'admin' && (
                                   <div className="flex items-center space-x-1 pl-2 border-l border-gray-300">
-                                    <button 
-                                      onClick={() => handleEditSale(sale)} 
-                                      className="p-1 text-blue-500 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 rounded transition-colors"
-                                      title="Modifier la vente"
-                                    >
-                                      <Pencil className="w-3 h-3" />
-                                    </button>
-                                    <button 
-                                      onClick={() => handleDeleteSale(sale)} 
-                                      className="p-1 text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 rounded transition-colors"
-                                      title="Supprimer la vente (restaure le stock)"
-                                    >
-                                      <Trash2 className="w-3 h-3" />
-                                    </button>
+                                    <button onClick={() => handleEditSale(sale)} className="p-1.5 text-blue-500 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 rounded transition-colors" title="Modifier la vente"><Pencil className="w-3 h-3" /></button>
+                                    <button onClick={() => handleDeleteSale(sale)} className="p-1.5 text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 rounded transition-colors" title="Supprimer la vente (restaure le stock)"><Trash2 className="w-3 h-3" /></button>
                                   </div>
                                 )}
                               </div>
