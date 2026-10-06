@@ -7,6 +7,21 @@ export default function TransferHistoryModal({ isOpen, onClose, transferLogs = [
 
   if (!isOpen) return null;
 
+  // Safe parser for items (handles JSON strings or raw arrays)
+  const parseItems = (items) => {
+    if (!items) return [];
+    if (Array.isArray(items)) return items;
+    if (typeof items === 'string') {
+      try {
+        const parsed = JSON.parse(items);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (e) {
+        return [];
+      }
+    }
+    return [];
+  };
+
   const filteredLogs = transferLogs.filter(log => {
     const refMatch = (log.transfer_ref || '').toLowerCase().includes(searchQuery.toLowerCase());
     const authorMatch = (log.created_by || '').toLowerCase().includes(searchQuery.toLowerCase());
@@ -67,8 +82,11 @@ export default function TransferHistoryModal({ isOpen, onClose, transferLogs = [
                   <p className="text-xs text-amber-900 font-mono font-bold mt-1">Réf: {selectedReceipt.transfer_ref}</p>
                 </div>
                 <div className="text-right text-xs text-gray-500 space-y-1">
-                  <p className="flex items-center justify-end gap-1"><Calendar className="w-3.5 h-3.5" /> {new Date(selectedReceipt.created_at).toLocaleString('fr-FR')}</p>
-                  <p className="font-medium">Émis par: <strong>{selectedReceipt.created_by}</strong></p>
+                  <p className="flex items-center justify-end gap-1">
+                    <Calendar className="w-3.5 h-3.5" /> 
+                    {selectedReceipt.created_at ? new Date(selectedReceipt.created_at).toLocaleString('fr-FR') : 'Date N/A'}
+                  </p>
+                  <p className="font-medium">Émis par: <strong>{selectedReceipt.created_by || 'Admin'}</strong></p>
                 </div>
               </div>
 
@@ -83,12 +101,12 @@ export default function TransferHistoryModal({ isOpen, onClose, transferLogs = [
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {(selectedReceipt.items || []).map((item, idx) => (
+                    {parseItems(selectedReceipt.items).map((item, idx) => (
                       <tr key={idx} className="hover:bg-amber-50/20">
-                        <td className="p-3 font-bold text-gray-900">{item.product_name}</td>
+                        <td className="p-3 font-bold text-gray-900">{item.product_name || item.name}</td>
                         <td className="p-3 font-mono text-gray-500 uppercase">{item.batch_reference || 'N/A'}</td>
-                        <td className="p-3 text-center font-black text-indigo-700">{item.qty} unit(s)</td>
-                        <td className="p-3 font-bold text-emerald-800">🏪 {item.target_branch_name}</td>
+                        <td className="p-3 text-center font-black text-indigo-700">{item.qty || item.quantity} unit(s)</td>
+                        <td className="p-3 font-bold text-emerald-800">🏪 {item.target_branch_name || 'Succursale'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -106,7 +124,7 @@ export default function TransferHistoryModal({ isOpen, onClose, transferLogs = [
                   onClick={handlePrint}
                   className="px-4 py-2 bg-zinc-900 text-white font-bold text-xs rounded-xl flex items-center gap-2 shadow-sm"
                 >
-                  <Printer className="w-4 h-4 text-amber-400" /> Print Receipt
+                  <Printer className="w-4 h-4 text-amber-400" /> Imprimer le Reçu
                 </button>
               </div>
             </div>
@@ -131,12 +149,15 @@ export default function TransferHistoryModal({ isOpen, onClose, transferLogs = [
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {filteredLogs.map(log => {
-                      const totalQty = (log.items || []).reduce((acc, i) => acc + (Number(i.qty) || 0), 0);
+                      const itemsList = parseItems(log.items);
+                      const totalQty = itemsList.reduce((acc, i) => acc + (Number(i.qty || i.quantity) || 0), 0);
                       return (
                         <tr key={log.id || log.transfer_ref} className="hover:bg-gray-50">
                           <td className="p-3 font-mono font-bold text-indigo-700">{log.transfer_ref}</td>
-                          <td className="p-3 text-gray-500">{new Date(log.created_at).toLocaleString('fr-FR')}</td>
-                          <td className="p-3 font-semibold text-gray-800">{log.created_by}</td>
+                          <td className="p-3 text-gray-500">
+                            {log.created_at ? new Date(log.created_at).toLocaleString('fr-FR') : 'Date N/A'}
+                          </td>
+                          <td className="p-3 font-semibold text-gray-800">{log.created_by || 'Admin'}</td>
                           <td className="p-3 text-center font-black text-gray-900">{totalQty} article(s)</td>
                           <td className="p-3 text-center">
                             <button 
