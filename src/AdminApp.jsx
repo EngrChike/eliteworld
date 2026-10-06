@@ -472,20 +472,42 @@ export default function AdminApp({ currentUser, supabase }) {
     setBatchTransferStep('review');
   };
 
+  // --- SAFE & ACCURATE BATCH TRANSFER CONFIRMATION ---
   const handleConfirmBatchTransfer = async () => {
     setBatchTransferLoading(true);
     setBatchTransferError('');
 
     try {
       const activeItems = Object.values(selectedBatchItems).filter(item => item.selected);
+      if (activeItems.length === 0) {
+        setBatchTransferError("Aucun produit sélectionné pour le transfert.");
+        setBatchTransferLoading(false);
+        return;
+      }
+
+      // Pre-validation before executing database calls
+      for (const item of activeItems) {
+        const transferQty = Number(item.qty) || 0;
+        if (!item.targetBranch) {
+          throw new Error(`Veuillez sélectionner une succursale de destination pour "${item.product.name}".`);
+        }
+        if (transferQty <= 0) {
+          throw new Error(`La quantité à transférer pour "${item.product.name}" doit être supérieure à 0.`);
+        }
+        if (transferQty > item.product.quantity) {
+          throw new Error(`Quantité insuffisante au QG pour "${item.product.name}" (Stock dispo: ${item.product.quantity}).`);
+        }
+      }
+
       const transferRef = `TRF-${Date.now().toString().slice(-6)}`;
       const transferSummary = [];
 
       for (const item of activeItems) {
         const { product, targetBranch, qty } = item;
+        const transferQty = Number(qty) || 0;
 
-        // Deduct from HQ Main Stock
-        const newHqQty = product.quantity - qty;
+        // 1. Deduct from HQ Main Stock
+        const newHqQty = product.quantity - transferQty;
         const { error: hqError } = await supabase
           .from('products')
           .update({ quantity: newHqQty, stock_status: newHqQty > 0 })
@@ -493,15 +515,15 @@ export default function AdminApp({ currentUser, supabase }) {
 
         if (hqError) throw hqError;
 
-        // Increment or Insert into Target Branch Stock
+        // 2. Increment or Insert into Target Branch Stock
         const existingTargetProd = products.find(p => 
           p.name.trim().toLowerCase() === product.name.trim().toLowerCase() && 
-          String(p.batch_reference || '') === String(product.batch_reference || '') && 
+          String(p.batch_reference || '').trim().toUpperCase() === String(product.batch_reference || '').trim().toUpperCase() && 
           String(p.branch_id || '') === String(targetBranch)
         );
 
         if (existingTargetProd) {
-          const newTargetQty = (existingTargetProd.quantity || 0) + Number(qty);
+          const newTargetQty = (existingTargetProd.quantity || 0) + transferQty;
           const { error: updateError } = await supabase
             .from('products')
             .update({ quantity: newTargetQty, stock_status: newTargetQty > 0 })
@@ -511,20 +533,20 @@ export default function AdminApp({ currentUser, supabase }) {
         } else {
           const { id, created_at, ...prodData } = product;
           prodData.branch_id = targetBranch;
-          prodData.quantity = Number(qty);
-          prodData.initial_quantity = Number(qty);
+          prodData.quantity = transferQty;
+          prodData.initial_quantity = transferQty;
           prodData.stock_status = true;
           const { error: insertError } = await supabase.from('products').insert([prodData]);
 
           if (insertError) throw insertError;
         }
 
-        const targetBranchObj = branches.find(b => b.id === targetBranch);
+        const targetBranchObj = branches.find(b => String(b.id) === String(targetBranch));
         transferSummary.push({
           product_id: product.id,
           product_name: product.name,
-          batch_reference: product.batch_reference,
-          qty: Number(qty),
+          batch_reference: product.batch_reference || 'N/A',
+          qty: transferQty,
           cost_price: product.cost_price || 0,
           price: product.price || 0,
           target_branch_id: targetBranch,
@@ -532,23 +554,41 @@ export default function AdminApp({ currentUser, supabase }) {
         });
       }
 
-      // Log transfer receipt into DB
+      // Create log record
+      const newLogRecord = {
+        transfer_ref: transferRef,
+        items: transferSummary,
+        created_by: currentUser?.full_name || 'Admin HQ',
+        created_at: new Date().toISOString()
+      };
+
+      // 3. Optimistically update local React state for immediate receipt availability
+      setTransferLogs(prev => [newLogRecord, ...prev]);
+
+      // 4. Persist transfer receipt into DB
       try {
-        await supabase.from('stock_transfers').insert([{
-          transfer_ref: transferRef,
-          items: transferSummary,
-          created_by: currentUser?.full_name || 'Admin HQ',
-          created_at: new Date().toISOString()
-        }]);
+        const { data: insertedData, error: logErr } = await supabase
+          .from('stock_transfers')
+          .insert([newLogRecord])
+          .select();
+
+        if (logErr) {
+          console.warn("Notice: stock_transfers DB table notice:", logErr.message);
+        } else if (insertedData && insertedData.length > 0) {
+          setTransferLogs(prev => prev.map(l => l.transfer_ref === transferRef ? insertedData[0] : l));
+        }
       } catch (logErr) {
-        console.warn("Table stock_transfers non encore disponible en BD, passage outre:", logErr);
+        console.warn("Table stock_transfers non encore disponible en BD:", logErr);
       }
 
       setBatchTransferLoading(false);
       setBatchTransferOpen(false);
+      
+      // Refresh backend state
       await fetchProducts();
       await fetchTransferLogs();
-      alert(`Transfert groupé effectue avec succès ! Réf: ${transferRef}`);
+
+      alert(`Transfert groupé effectué avec succès ! Réf: ${transferRef}`);
     } catch (err) {
       console.error("Batch transfer error:", err);
       setBatchTransferError(`Erreur lors du transfert: ${err.message}`);
