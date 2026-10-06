@@ -10,6 +10,12 @@ export default function StaffManagement({ supabase, branches = [] }) {
   const [formData, setFormData] = useState({ fullName: '', pinCode: '', role: 'staff', branchId: '' });
   const [editingStaff, setEditingStaff] = useState(null);
 
+  // Modal Security State (Remplace window.prompt)
+  const [isPinModalOpen, setIsPinModalOpen] = useState(false);
+  const [adminPinInput, setAdminPinInput] = useState('');
+  const [pinError, setPinError] = useState('');
+  const [pendingAction, setPendingAction] = useState(null);
+
   useEffect(() => {
     fetchStaff();
     fetchSales();
@@ -32,31 +38,42 @@ export default function StaffManagement({ supabase, branches = [] }) {
     if (!error && data) setSalesHistory(data);
   };
 
-  // 🔒 Fonction utilitaire de sécurité : Vérifier le PIN Admin
-  const verifyAdminPin = () => {
-    const adminPin = prompt("🔒 Sécurité Admin : Entrez votre code PIN Administrateur pour autoriser cette action :");
-    if (!adminPin) return false;
+  // 🔒 Déclencheur de validation Admin
+  const requestAdminAuth = (actionCallback) => {
+    setAdminPinInput('');
+    setPinError('');
+    setPendingAction(() => actionCallback);
+    setIsPinModalOpen(true);
+  };
 
-    const verifyingAdmin = staffList.find(s => s.pin_code === adminPin && s.role === 'admin' && s.is_active);
-    
+  // 🔒 Soumission et vérification du PIN dans la Modal
+  const handleVerifyAdminPin = (e) => {
+    e.preventDefault();
+    const verifyingAdmin = staffList.find(s => s.pin_code === adminPinInput.trim() && s.role === 'admin' && s.is_active);
+
     if (!verifyingAdmin) {
-      alert("❌ Code PIN administrateur incorrect ou non autorisé.");
-      return false;
+      setPinError("❌ Code PIN administrateur incorrect ou non autorisé.");
+      return;
     }
-    return true;
+
+    setIsPinModalOpen(false);
+    if (pendingAction) {
+      pendingAction();
+      setPendingAction(null);
+    }
   };
 
   // --- ACTIONS STAFF ---
 
   const handleStartEdit = (staff) => {
-    if (!verifyAdminPin()) return; // Vérification Admin avant d'entrer en mode édition
-    
-    setEditingStaff(staff);
-    setFormData({
-      fullName: staff.full_name,
-      pinCode: staff.pin_code,
-      role: staff.role,
-      branchId: staff.branch_id || ''
+    requestAdminAuth(() => {
+      setEditingStaff(staff);
+      setFormData({
+        fullName: staff.full_name,
+        pinCode: staff.pin_code,
+        role: staff.role,
+        branchId: staff.branch_id || ''
+      });
     });
   };
 
@@ -93,22 +110,22 @@ export default function StaffManagement({ supabase, branches = [] }) {
         alert(error.code === '23505' ? "Ce code PIN est déjà utilisé." : "Erreur de création.");
       } else {
         alert("Compte staff créé avec succès !");
-        handleCancelEdit(); // Réinitialise le formulaire
+        handleCancelEdit();
         fetchStaff();
       }
     }
   };
 
-  const toggleStaffStatus = async (id, currentStatus) => {
-    if (!verifyAdminPin()) return; // Vérification Admin avant de désactiver/activer
-
-    const { error } = await supabase.from('staff').update({ is_active: !currentStatus }).eq('id', id);
-    if (!error) {
-      fetchStaff();
-      alert(`Statut du compte mis à jour (${!currentStatus ? 'Actif' : 'Désactivé'}).`);
-    } else {
-      alert("Erreur lors de la mise à jour.");
-    }
+  const toggleStaffStatus = (id, currentStatus) => {
+    requestAdminAuth(async () => {
+      const { error } = await supabase.from('staff').update({ is_active: !currentStatus }).eq('id', id);
+      if (!error) {
+        fetchStaff();
+        alert(`Statut du compte mis à jour (${!currentStatus ? 'Actif' : 'Désactivé'}).`);
+      } else {
+        alert("Erreur lors de la mise à jour.");
+      }
+    });
   };
 
   // --- LOGIQUE D'AFFICHAGE DES VENTES ---
@@ -258,7 +275,7 @@ export default function StaffManagement({ supabase, branches = [] }) {
                           <Edit className="w-3.5 h-3.5" />
                         </button>
                         
-                        {/* Bouton Activer/Désactiver (Admins ne peuvent pas se désactiver eux-mêmes par erreur ici, mais vous pouvez modifier si besoin) */}
+                        {/* Bouton Activer/Désactiver */}
                         {staff.role !== 'admin' && (
                           <button 
                             onClick={() => toggleStaffStatus(staff.id, staff.is_active)} 
@@ -333,6 +350,55 @@ export default function StaffManagement({ supabase, branches = [] }) {
           )}
         </div>
       </div>
+
+      {/* 🔒 MODAL DE SÉCURITÉ CODE PIN ADMIN */}
+      {isPinModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl max-w-sm w-full p-5 shadow-2xl border border-gray-100 animate-in fade-in zoom-in duration-150">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2.5 bg-amber-50 text-amber-600 rounded-lg border border-amber-100">
+                <Key className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-bold text-xs uppercase text-gray-800">Sécurité Administrateur</h3>
+                <p className="text-[11px] text-gray-500">Autorisation requise pour cette action</p>
+              </div>
+            </div>
+
+            <form onSubmit={handleVerifyAdminPin} className="space-y-4">
+              <div>
+                <input
+                  type="password"
+                  autoFocus
+                  placeholder="••••"
+                  value={adminPinInput}
+                  onChange={(e) => setAdminPinInput(e.target.value)}
+                  className="w-full border p-3 text-center text-lg tracking-[0.3em] font-mono rounded-lg outline-none focus:ring-2 focus:ring-slate-800 bg-gray-50 focus:bg-white transition-all"
+                />
+                {pinError && (
+                  <p className="text-red-500 text-[11px] mt-2 font-medium text-center">{pinError}</p>
+                )}
+              </div>
+
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setIsPinModalOpen(false)}
+                  className="w-1/2 py-2.5 bg-gray-100 text-gray-600 hover:bg-gray-200 text-xs font-bold rounded-lg uppercase transition-colors"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="submit"
+                  className="w-1/2 py-2.5 bg-[#0f172a] text-white hover:bg-slate-800 text-xs font-bold rounded-lg uppercase transition-colors shadow-sm"
+                >
+                  Valider
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
     </div>
   );
