@@ -8,7 +8,7 @@ export default function ClientApp() {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   
-  // State for the globally active branch
+  // State for the globally active branch display name
   const [storeBranch, setStoreBranch] = useState('Siège Principal');
   const [isLoading, setIsLoading] = useState(true);
 
@@ -23,51 +23,57 @@ export default function ClientApp() {
 
   const fetchActiveBranchAndProducts = async () => {
     setIsLoading(true);
-    let activeBranchName = 'Siège Principal'; // Default fallback
 
     try {
-      // 1. Fetch active branch name from store_settings
-      const { data: settingsData, error: settingsError } = await supabase
-        .from('store_settings')
-        .select('active_branch')
-        .maybeSingle();
-
-      if (!settingsError && settingsData && settingsData.active_branch) {
-        activeBranchName = settingsData.active_branch;
-      }
-    } catch (err) {
-      console.log("No store settings found, defaulting to Siège Principal.");
-    }
-
-    setStoreBranch(activeBranchName);
-
-    try {
-      // 2. Fetch all branches to map branch names to their respective IDs
+      // 1. Fetch all branches to map IDs to Names
       const { data: branchesData } = await supabase
         .from('branches')
         .select('id, name');
 
       const branchesList = branchesData || [];
 
-      // 3. Build products query using branch_id
+      // 2. Fetch active branch ID from store_settings
+      let activeBranchId = null;
+      const { data: settingsData, error: settingsError } = await supabase
+        .from('store_settings')
+        .select('active_branch')
+        .maybeSingle();
+
+      if (!settingsError && settingsData && settingsData.active_branch) {
+        activeBranchId = settingsData.active_branch;
+      }
+
+      // 3. Resolve active branch display name & query target
+      let activeBranchName = 'Siège Principal';
+      let selectedBranchId = null;
+
+      if (branchesList.length > 0 && activeBranchId) {
+        const matchedBranch = branchesList.find(b => String(b.id) === String(activeBranchId));
+        if (matchedBranch) {
+          activeBranchName = matchedBranch.name;
+          selectedBranchId = matchedBranch.id;
+        }
+      }
+
+      setStoreBranch(activeBranchName);
+
+      // 4. Build products query
       let query = supabase
         .from('products')
         .select('*')
         .eq('is_archived', false)
         .gt('quantity', 0);
 
-      if (activeBranchName === 'Siège Principal') {
-        // HQ main stock products have a null branch_id
-        query = query.is('branch_id', null);
+      // Logic:
+      // A) If no branches exist at all, display all available products.
+      // B) If a specific branch is active, filter by that branch's ID.
+      // C) If HQ / Siège Principal is active, fetch products with null branch_id.
+      if (branchesList.length === 0) {
+        // No branch filter applied
+      } else if (selectedBranchId) {
+        query = query.eq('branch_id', selectedBranchId);
       } else {
-        // Find the branch ID matching the active branch name
-        const matchedBranch = branchesList.find(b => b.name === activeBranchName);
-        if (matchedBranch) {
-          query = query.eq('branch_id', matchedBranch.id);
-        } else {
-          // Fallback if branch name doesn't match any record
-          query = query.eq('branch_id', 'non-existent-id');
-        }
+        query = query.is('branch_id', null);
       }
 
       const { data, error } = await query.order('created_at', { ascending: false });
@@ -125,7 +131,7 @@ export default function ClientApp() {
     if (cart.length === 0) return;
     let msg = `✨ *ELITE WORLDS - NOUVELLE COMMANDE (${storeBranch})* ✨\n------------------------------------------\n\n`;
     cart.forEach((item, idx) => {
-      msg += `🛍️️ *${idx + 1}. ${item.name}*\n  Prix: ${item.price.toLocaleString()} FCFA\n  Qté: ${item.quantity}\n------------------------------------------\n`;
+      msg += `🛍 *${idx + 1}. ${item.name}*\n  Prix: ${item.price.toLocaleString()} FCFA\n  Qté: ${item.quantity}\n------------------------------------------\n`;
     });
     msg += `\n🎯 *TOTAL GÉNÉRAL:* ${cartTotal.toLocaleString()} FCFA\n\nMerci de confirmer la disponibilité pour expédition immédiate !`;
     window.open(`https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(msg)}`, '_blank');
