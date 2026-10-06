@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Package, Users, Eye, EyeOff, UserCog, Store, Filter, Lock, Globe } from 'lucide-react';
+import { Package, Users, Eye, EyeOff, UserCog, Store, Filter, Lock, Globe, ReceiptText } from 'lucide-react';
 import SalesLedger from './SalesLedger';
 import InventoryManagement from './components/InventoryManagement';
 import BranchManagement from './components/BranchManagement';
 import BatchTransferModal from './components/BatchTransferModal';
+import TransferHistoryModal from './components/TransferHistoryModal';
 import StaffManagement from './StaffManagement';
 
 export default function AdminApp({ currentUser, supabase }) {
@@ -16,6 +17,7 @@ export default function AdminApp({ currentUser, supabase }) {
   const [customers, setCustomers] = useState([]);
   const [staffList, setStaffList] = useState([]);
   const [branches, setBranches] = useState([]);
+  const [transferLogs, setTransferLogs] = useState([]);
   
   // Privacy / Financial Visibility States
   const [showFinancials, setShowFinancials] = useState(false);
@@ -83,6 +85,9 @@ export default function AdminApp({ currentUser, supabase }) {
   const [batchTransferLoading, setBatchTransferLoading] = useState(false);
   const [batchTransferError, setBatchTransferError] = useState('');
 
+  // Transfer History Modal State
+  const [transferHistoryOpen, setTransferHistoryOpen] = useState(false);
+
   // Determine active branch context
   const activeBranchId = isAdmin ? viewingBranch : (currentUser?.branch_id || '');
 
@@ -90,6 +95,7 @@ export default function AdminApp({ currentUser, supabase }) {
     fetchBranchesFromSupabase();
     fetchProducts();
     fetchCustomersFromSupabase();
+    fetchTransferLogs();
     if (isAdmin) {
       fetchStaffFromSupabase();
       fetchStoreSettings(); 
@@ -195,6 +201,20 @@ export default function AdminApp({ currentUser, supabase }) {
       const { data, error } = await supabase.from('staff').select('*').order('created_at', { ascending: false });
       if (!error && data) setStaffList(data);
     } catch (err) { console.error("Erreur personnel:", err); }
+  };
+
+  const fetchTransferLogs = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('stock_transfers')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (!error && data) {
+        setTransferLogs(data);
+      }
+    } catch (err) {
+      console.log("Transfers history table optional initialization.");
+    }
   };
 
   const verifyAdminPinBeforeAction = () => {
@@ -391,6 +411,11 @@ export default function AdminApp({ currentUser, supabase }) {
     setBatchTransferOpen(true);
   };
 
+  const handleOpenTransferHistory = () => {
+    fetchTransferLogs();
+    setTransferHistoryOpen(true);
+  };
+
   const handleToggleBatchItemSelect = (product) => {
     setSelectedBatchItems(prev => {
       const copy = { ...prev };
@@ -453,10 +478,13 @@ export default function AdminApp({ currentUser, supabase }) {
 
     try {
       const activeItems = Object.values(selectedBatchItems).filter(item => item.selected);
+      const transferRef = `TRF-${Date.now().toString().slice(-6)}`;
+      const transferSummary = [];
 
       for (const item of activeItems) {
         const { product, targetBranch, qty } = item;
 
+        // Deduct from HQ Main Stock
         const newHqQty = product.quantity - qty;
         const { error: hqError } = await supabase
           .from('products')
@@ -465,6 +493,7 @@ export default function AdminApp({ currentUser, supabase }) {
 
         if (hqError) throw hqError;
 
+        // Increment or Insert into Target Branch Stock
         const existingTargetProd = products.find(p => 
           p.name.trim().toLowerCase() === product.name.trim().toLowerCase() && 
           String(p.batch_reference || '') === String(product.batch_reference || '') && 
@@ -489,12 +518,37 @@ export default function AdminApp({ currentUser, supabase }) {
 
           if (insertError) throw insertError;
         }
+
+        const targetBranchObj = branches.find(b => b.id === targetBranch);
+        transferSummary.push({
+          product_id: product.id,
+          product_name: product.name,
+          batch_reference: product.batch_reference,
+          qty: Number(qty),
+          cost_price: product.cost_price || 0,
+          price: product.price || 0,
+          target_branch_id: targetBranch,
+          target_branch_name: targetBranchObj?.name || 'Succursale'
+        });
+      }
+
+      // Log transfer receipt into DB
+      try {
+        await supabase.from('stock_transfers').insert([{
+          transfer_ref: transferRef,
+          items: transferSummary,
+          created_by: currentUser?.full_name || 'Admin HQ',
+          created_at: new Date().toISOString()
+        }]);
+      } catch (logErr) {
+        console.warn("Table stock_transfers non encore disponible en BD, passage outre:", logErr);
       }
 
       setBatchTransferLoading(false);
       setBatchTransferOpen(false);
       await fetchProducts();
-      alert("Transfert groupé effectué avec succès !");
+      await fetchTransferLogs();
+      alert(`Transfert groupé effectue avec succès ! Réf: ${transferRef}`);
     } catch (err) {
       console.error("Batch transfer error:", err);
       setBatchTransferError(`Erreur lors du transfert: ${err.message}`);
@@ -724,6 +778,7 @@ export default function AdminApp({ currentUser, supabase }) {
             editingProduct={editingProduct}
             handleCancelEditProduct={handleCancelEditProduct}
             handleOpenBatchTransfer={handleOpenBatchTransfer}
+            handleOpenTransferHistory={handleOpenTransferHistory}
             showArchived={showArchived}
             setShowArchived={setShowArchived}
             selectedBatchFilter={selectedBatchFilter}
@@ -901,6 +956,14 @@ export default function AdminApp({ currentUser, supabase }) {
         handleProceedToBatchReview={handleProceedToBatchReview}
         handleConfirmBatchTransfer={handleConfirmBatchTransfer}
         batchTransferLoading={batchTransferLoading}
+      />
+
+      {/* TRANSFER HISTORY & RECEIPTS MODAL */}
+      <TransferHistoryModal 
+        isOpen={transferHistoryOpen}
+        onClose={() => setTransferHistoryOpen(false)}
+        transferLogs={transferLogs}
+        branches={branches}
       />
 
       {/* SECURE ADMIN PIN MODAL */}
