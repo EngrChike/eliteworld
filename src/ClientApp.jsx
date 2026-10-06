@@ -150,11 +150,22 @@ export default function ClientApp() {
       <header className="bg-white text-black sticky top-0 z-40 shadow-sm border-b border-gray-100 px-4 py-3">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
           <div className="flex items-center space-x-2.5 cursor-pointer shrink-0 group select-none" onClick={() => setSearchTerm('')}>
-            <img 
-              src="/favicon.svg" 
-              alt="Elite Worlds Logo" 
-              className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl shadow-md object-cover" 
-            />
+            <div className="w-9 h-9 sm:w-10 sm:h-10 bg-gradient-to-br from-amber-500 via-orange-500 to-amber-600 rounded-xl flex items-center justify-center shadow-md p-1.5">
+             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <linearGradient id="luxury-gold" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#9A7422" />
+      <stop offset="50%" stop-color="#E5C158" />
+      <stop offset="100%" stop-color="#FFF3C4" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="120" fill="#090A0C"/>
+  <path d="M206 140 L256 90 L306 140 L346 110 L326 170 H186 L166 110 Z" fill="url(#luxury-gold)"/>
+  <circle cx="256" cy="72" r="12" fill="url(#luxury-gold)"/>
+  <path d="M186 200 H326 V240 H232 V282 H306 V320 H232 V364 H326 V404 H186 Z" fill="url(#luxury-gold)"/>
+</svg>
+
+            </div>
             <div className="flex flex-col justify-center">
               <span className="font-black text-base sm:text-xl tracking-wider uppercase text-zinc-900 leading-none group-hover:text-amber-600 transition-colors">ELITE  </span>
               <span className="text-[10px] sm:text-[11px] font-bold text-amber-500 tracking-[0.25em] uppercase leading-tight mt-0.5">WORLDS</span>
