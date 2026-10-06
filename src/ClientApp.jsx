@@ -123,7 +123,7 @@ export default function ClientApp() {
 
   const handleWhatsAppCheckout = () => {
     if (cart.length === 0) return;
-    let msg = `✨ *Leroide La Sape - NOUVELLE COMMANDE (${storeBranch})* ✨\n------------------------------------------\n\n`;
+    let msg = `✨ *ELITE WORLDS - NOUVELLE COMMANDE (${storeBranch})* ✨\n------------------------------------------\n\n`;
     cart.forEach((item, idx) => {
       msg += `🛍️️ *${idx + 1}. ${item.name}*\n  Prix: ${item.price.toLocaleString()} FCFA\n  Qté: ${item.quantity}\n------------------------------------------\n`;
     });
@@ -152,8 +152,8 @@ export default function ClientApp() {
               </svg>
             </div>
             <div className="flex flex-col justify-center">
-              <span className="font-black text-base sm:text-xl tracking-wider uppercase text-zinc-900 leading-none group-hover:text-amber-600 transition-colors">Leroide </span>
-              <span className="text-[10px] sm:text-[11px] font-bold text-amber-500 tracking-[0.25em] uppercase leading-tight mt-0.5">La Sape</span>
+              <span className="font-black text-base sm:text-xl tracking-wider uppercase text-zinc-900 leading-none group-hover:text-amber-600 transition-colors">ELITE  </span>
+              <span className="text-[10px] sm:text-[11px] font-bold text-amber-500 tracking-[0.25em] uppercase leading-tight mt-0.5">WORLDS</span>
             </div>
           </div>
 
@@ -183,7 +183,7 @@ export default function ClientApp() {
                 <MapPin className="w-3 h-3" /> Boutique: {storeBranch}
               </span>
             </div>
-            <h1 className="text-xl md:text-3xl font-black tracking-tight">Collection Leroide La Sape</h1>
+            <h1 className="text-xl md:text-3xl font-black tracking-tight">Collection ELITE WORLDS</h1>
             <p className="text-zinc-400 text-xs mt-1">Passez votre commande instantanément via WhatsApp pour notre boutique de {storeBranch}.</p>
           </div>
           <div className="bg-white/5 px-4 py-2.5 rounded-xl border border-white/10 mt-4 md:mt-0">
