@@ -150,13 +150,11 @@ export default function ClientApp() {
       <header className="bg-white text-black sticky top-0 z-40 shadow-sm border-b border-gray-100 px-4 py-3">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
           <div className="flex items-center space-x-2.5 cursor-pointer shrink-0 group select-none" onClick={() => setSearchTerm('')}>
-            <div className="w-9 h-9 sm:w-10 sm:h-10 bg-gradient-to-br from-amber-500 via-orange-500 to-amber-600 rounded-xl flex items-center justify-center shadow-md p-1.5">
-              <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-full h-full text-white">
-                <path d="M30 25 C30 25, 45 15, 50 15 C55 15, 70 25, 70 25 C70 45, 60 75, 50 85 C40 75, 30 45, 30 25 Z" stroke="currentColor" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round" />
-                <circle cx="50" cy="42" r="7" fill="currentColor" />
-                <path d="M40 60 C45 65, 55 65, 60 60" stroke="currentColor" strokeWidth="6" strokeLinecap="round" />
-              </svg>
-            </div>
+            <img 
+              src="/favicon.svg" 
+              alt="Elite Worlds Logo" 
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl shadow-md object-cover" 
+            />
             <div className="flex flex-col justify-center">
               <span className="font-black text-base sm:text-xl tracking-wider uppercase text-zinc-900 leading-none group-hover:text-amber-600 transition-colors">ELITE  </span>
               <span className="text-[10px] sm:text-[11px] font-bold text-amber-500 tracking-[0.25em] uppercase leading-tight mt-0.5">WORLDS</span>
