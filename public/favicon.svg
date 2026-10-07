@@ -1,19 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
-  <defs>
-    <linearGradient id="luxury-gold" x1="0%" y1="100%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#9A7422" />
-      <stop offset="50%" stop-color="#E5C158" />
-      <stop offset="100%" stop-color="#FFF3C4" />
-    </linearGradient>
-  </defs>
-
-  <!-- Background -->
-  <rect width="512" height="512" rx="120" fill="#090A0C"/>
-
-  <!-- Crown Crest -->
-  <path d="M206 140 L256 90 L306 140 L346 110 L326 170 H186 L166 110 Z" fill="url(#luxury-gold)"/>
-  <circle cx="256" cy="72" r="12" fill="url(#luxury-gold)"/>
-
-  <!-- Regal Serif 'E' -->
-  <path d="M186 200 H326 V240 H232 V282 H306 V320 H232 V364 H326 V404 H186 Z" fill="url(#luxury-gold)"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Rounded Orange/Amber Background Box -->
+  <rect width="100" height="100" rx="28" fill="#f68b1e"/>
+  
+  <!-- Modern DC Emblem Icon -->
+  <path 
+    d="M30 25 C30 25, 45 15, 50 15 C55 15, 70 25, 70 25 C70 45, 60 75, 50 85 C40 75, 30 45, 30 25 Z" 
+    stroke="#FFFFFF" 
+    stroke-width="7" 
+    stroke-linecap="round" 
+    stroke-linejoin="round" 
+    fill="none"
+  />
+  <circle cx="50" cy="42" r="7" fill="#FFFFFF"/>
+  <path 
+    d="M40 60 C45 65, 55 65, 60 60" 
+    stroke="#FFFFFF" 
+    stroke-width="7" 
+    stroke-linecap="round" 
+    fill="none"
+  />
 </svg>
