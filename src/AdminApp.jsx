@@ -111,7 +111,6 @@ export default function AdminApp({ currentUser, supabase }) {
     }
   }, [viewingBranch]);
 
-  // --- FETCH GLOBAL STORE SETTINGS ---
   const fetchStoreSettings = async () => {
     try {
       const { data, error } = await supabase
@@ -127,7 +126,6 @@ export default function AdminApp({ currentUser, supabase }) {
     }
   };
 
-  // --- UPDATE LIVE STOREFRONT (Saves branch_id or '' for HQ) ---
   const handleUpdateLiveBranch = async (newBranchId) => {
     if (!(await verifyAdminPinBeforeAction())) return;
     try {
@@ -162,60 +160,54 @@ export default function AdminApp({ currentUser, supabase }) {
   // --- BULLETPROOF CUSTOMER & SALES FETCHING ---
   const fetchCustomersFromSupabase = async () => {
     try {
-      let rawCustomers = [];
+      // 1. Fetch registered customers
+      const { data: cData } = await supabase.from('customers').select('*').order('created_at', { ascending: false });
+      let rawCustomers = cData || [];
+
       let historyData = [];
 
-      // Attempt 1: Embedded relational query
-      const { data: embedData, error: embedErr } = await supabase
-        .from('customers')
-        .select('*, customer_history(*)')
-        .order('created_at', { ascending: false });
+      // 2. Concurrently fetch from ALL potential sales tables to bypass silent embed failures
+      const [res1, res2, res3] = await Promise.all([
+        supabase.from('customer_history').select('*'),
+        supabase.from('sales_ledger').select('*'),
+        supabase.from('sales').select('*')
+      ]);
 
-      if (!embedErr && embedData) {
-        rawCustomers = embedData;
-      } else {
-        // Attempt 2: Fallback to querying tables independently if relational embed failed
-        console.warn("Notice: Query embed for customer_history failed, falling back to multi-table fetch:", embedErr?.message);
-        const { data: cData } = await supabase.from('customers').select('*').order('created_at', { ascending: false });
-        rawCustomers = cData || [];
+      if (res2.data && res2.data.length > 0) historyData = [...historyData, ...res2.data];
+      if (res1.data && res1.data.length > 0) historyData = [...historyData, ...res1.data];
+      if (res3.data && res3.data.length > 0) historyData = [...historyData, ...res3.data];
 
-        // Try candidate sales history table names
-        const { data: h1 } = await supabase.from('customer_history').select('*');
-        if (h1 && h1.length > 0) {
-          historyData = h1;
-        } else {
-          const { data: h2 } = await supabase.from('sales_ledger').select('*');
-          if (h2 && h2.length > 0) {
-            historyData = h2;
-          } else {
-            const { data: h3 } = await supabase.from('sales').select('*');
-            if (h3 && h3.length > 0) historyData = h3;
-          }
-        }
+      // 3. Deduplicate by ID to prevent overlap if tables share records
+      const uniqueHistoryMap = new Map();
+      historyData.forEach(item => {
+        if (item.id) uniqueHistoryMap.set(item.id, item);
+      });
+      historyData = Array.from(uniqueHistoryMap.values());
 
-        // Attach independently fetched sales history items to their respective customers
-        rawCustomers = rawCustomers.map(c => {
-          const cHist = historyData.filter(h => 
-            String(h.customer_id || h.customerId || h.client_id) === String(c.id)
-          );
-          return { ...c, customer_history: cHist };
+      // 4. Attach sales history directly to customers
+      rawCustomers = rawCustomers.map(c => {
+        const cHist = historyData.filter(h => 
+          String(h.customer_id || h.customerId || h.client_id) === String(c.id)
+        );
+        return { ...c, customer_history: cHist };
+      });
+
+      // 5. Catch Orphan Sales (Direct walk-in sales without a specific customer ID)
+      const orphanSales = historyData.filter(h => !h.customer_id && !h.customerId && !h.client_id);
+      if (orphanSales.length > 0) {
+        rawCustomers.push({
+          id: 'virtual_global_client',
+          name: 'Ventes Directes Client',
+          phone: '',
+          branch_id: orphanSales[0].branch_id || null,
+          total_debt: 0,
+          customer_history: orphanSales
         });
-
-        // Collect orphan sales entries if customers list was empty
-        if (rawCustomers.length === 0 && historyData.length > 0) {
-          rawCustomers = [{
-            id: 'virtual_global_client',
-            name: 'Ventes Directes Client',
-            phone: '',
-            branch_id: null,
-            total_debt: 0,
-            customer_history: historyData
-          }];
-        }
       }
 
+      // 6. Format math calculations cleanly
       const formatted = rawCustomers.map(c => {
-        const rawHistory = c.customer_history || c.history || c.sales || [];
+        const rawHistory = c.customer_history || [];
         const formattedHistory = rawHistory.map(h => {
           let parsedItems = [];
           if (h.items) {
@@ -301,7 +293,6 @@ export default function AdminApp({ currentUser, supabase }) {
     });
   };
 
-  // --- FINANCIAL MASKING TOGGLE & AUTO-HIDE TIMER ---
   const handleToggleFinancialVisibility = async () => {
     if (showFinancials) {
       setShowFinancials(false);
@@ -322,7 +313,6 @@ export default function AdminApp({ currentUser, supabase }) {
     return `${(amount || 0).toLocaleString()} FCFA`;
   };
 
-  // --- BRANCH HANDLERS ---
   const handleSaveBranch = async (e) => {
     e.preventDefault();
     if (!branchName) return;
@@ -370,7 +360,6 @@ export default function AdminApp({ currentUser, supabase }) {
     }
   };
 
-  // --- STAFF HANDLERS ---
   const handleStartEditStaff = async (staffMember) => {
     if (!(await verifyAdminPinBeforeAction())) return;
     setEditingStaff(staffMember);
@@ -418,7 +407,6 @@ export default function AdminApp({ currentUser, supabase }) {
     }
   };
 
-  // --- IMAGE COMPRESSION ---
   const compressImage = (file, maxWidth = 800, maxHeight = 800, quality = 0.75) => { 
     return new Promise((resolve, reject) => {
       const reader = new FileReader(); reader.readAsDataURL(file);
@@ -437,7 +425,6 @@ export default function AdminApp({ currentUser, supabase }) {
     });
   };
 
-  // --- PRODUCT HANDLERS ---
   const handleSaveProduct = async (e) => {
     e.preventDefault();
     if (!name || !price || quantity === '' || !batch) return;
@@ -478,7 +465,6 @@ export default function AdminApp({ currentUser, supabase }) {
     } catch (err) { alert(`Erreur: ${err.message}`); } finally { setUploading(false); }
   };
 
-  // --- BATCH TRANSFER HANDLERS ---
   const handleOpenBatchTransfer = () => {
     setSelectedBatchItems({});
     setBatchTransferStep('select');
@@ -547,7 +533,6 @@ export default function AdminApp({ currentUser, supabase }) {
     setBatchTransferStep('review');
   };
 
-  // --- SAFE & ACCURATE BATCH TRANSFER CONFIRMATION ---
   const handleConfirmBatchTransfer = async () => {
     setBatchTransferLoading(true);
     setBatchTransferError('');
@@ -560,7 +545,6 @@ export default function AdminApp({ currentUser, supabase }) {
         return;
       }
 
-      // Pre-validation before executing database calls
       for (const item of activeItems) {
         const transferQty = Number(item.qty) || 0;
         if (!item.targetBranch) {
@@ -581,7 +565,6 @@ export default function AdminApp({ currentUser, supabase }) {
         const { product, targetBranch, qty } = item;
         const transferQty = Number(qty) || 0;
 
-        // 1. Deduct from HQ Main Stock
         const newHqQty = product.quantity - transferQty;
         const { error: hqError } = await supabase
           .from('products')
@@ -590,7 +573,6 @@ export default function AdminApp({ currentUser, supabase }) {
 
         if (hqError) throw hqError;
 
-        // 2. Increment or Insert into Target Branch Stock
         const existingTargetProd = products.find(p => 
           p.name.trim().toLowerCase() === product.name.trim().toLowerCase() && 
           String(p.batch_reference || '').trim().toUpperCase() === String(product.batch_reference || '').trim().toUpperCase() && 
@@ -629,7 +611,6 @@ export default function AdminApp({ currentUser, supabase }) {
         });
       }
 
-      // Create log record
       const newLogRecord = {
         transfer_ref: transferRef,
         items: transferSummary,
@@ -637,10 +618,8 @@ export default function AdminApp({ currentUser, supabase }) {
         created_at: new Date().toISOString()
       };
 
-      // 3. Optimistically update local React state for immediate receipt availability
       setTransferLogs(prev => [newLogRecord, ...prev]);
 
-      // 4. Persist transfer receipt into DB
       try {
         const { data: insertedData, error: logErr } = await supabase
           .from('stock_transfers')
@@ -659,7 +638,6 @@ export default function AdminApp({ currentUser, supabase }) {
       setBatchTransferLoading(false);
       setBatchTransferOpen(false);
       
-      // Refresh backend state
       await fetchProducts();
       await fetchTransferLogs();
 
@@ -694,7 +672,6 @@ export default function AdminApp({ currentUser, supabase }) {
     setProducts(prev => prev.map(p => String(p.id) === String(id) ? { ...p, is_archived: archiveState } : p));
   };
 
-  // ---- CONTEXT FILTERING & LOW-STOCK DETECTOR ----
   const contextProducts = products.filter(p => {
     if (activeBranchId === 'ALL' || activeBranchId === '') return true;
     return String(p.branch_id || '') === String(activeBranchId);
@@ -705,18 +682,13 @@ export default function AdminApp({ currentUser, supabase }) {
     return String(c.branch_id || '') === String(activeBranchId);
   });
 
-  // Shortage / Low Stock Detector (Products with stock <= 3)
   const lowStockProducts = contextProducts.filter(p => !p.is_archived && (parseInt(p.quantity) || 0) <= 3);
   const hasLowStock = lowStockProducts.length > 0;
 
-  // ---- ACCURATE FINANCIAL CALCULATIONS ----
-
-  // 1. Total Sales Revenue
   const totalSalesRevenue = contextCustomers.reduce((acc, c) => {
     const customerSales = (c.history || []).reduce((hAcc, h) => {
       let rev = parseFloat(h.total ?? h.total_amount ?? h.amount ?? h.grand_total ?? h.total_price ?? 0) || 0;
       
-      // Fallback: If root transaction total is 0, sum item price * qty
       if (rev === 0 && Array.isArray(h.items) && h.items.length > 0) {
         rev = h.items.reduce((iAcc, it) => {
           const itemPrice = parseFloat(it.price ?? it.unit_price ?? it.total ?? 0) || 0;
@@ -729,7 +701,6 @@ export default function AdminApp({ currentUser, supabase }) {
     return acc + customerSales;
   }, 0);
 
-  // 2. Cost of Goods Sold (COGS)
   const totalGoodsSoldCost = contextCustomers.reduce((acc, c) => {
     const customerCOGS = (c.history || []).reduce((hAcc, h) => {
       const items = Array.isArray(h.items) ? h.items : [];
@@ -758,7 +729,6 @@ export default function AdminApp({ currentUser, supabase }) {
     return acc + customerCOGS;
   }, 0);
 
-  // 3. Total Outstanding Debts
   const totalOutstandingDebt = contextCustomers.reduce((acc, c) => {
     const directDebt = parseFloat(c.totalDebt ?? c.total_debt ?? c.debt ?? c.balance ?? c.outstanding_debt ?? 0) || 0;
     
@@ -825,7 +795,6 @@ export default function AdminApp({ currentUser, supabase }) {
     <div className="bg-[#f8f9fa] text-gray-800 font-sans p-3 sm:p-6 lg:p-8 min-h-screen">
       <div className="max-w-7xl mx-auto space-y-6">
         
-        {/* HEADER NAVIGATION */}
         {isAdmin ? (
           <div className="flex flex-col gap-4 bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-4">
@@ -838,7 +807,6 @@ export default function AdminApp({ currentUser, supabase }) {
               </div>
 
               <div className="flex items-center gap-3">
-                {/* BLINKING LOW STOCK ALERT BUTTON */}
                 <button 
                   onClick={() => {
                     setActiveTab('inventory');
@@ -861,7 +829,6 @@ export default function AdminApp({ currentUser, supabase }) {
                   </span>
                 </button>
 
-                {/* ADMIN BRANCH GLOBAL FILTER */}
                 <div className="flex items-center gap-2 border border-gray-200 px-4 py-2 rounded-lg bg-gray-50 shadow-sm">
                   <Filter className="w-4 h-4 text-gray-500" />
                   <select value={viewingBranch} onChange={(e) => setViewingBranch(e.target.value)} className="bg-transparent text-sm font-semibold text-gray-800 outline-none cursor-pointer">
@@ -885,7 +852,6 @@ export default function AdminApp({ currentUser, supabase }) {
           </div>
         )}
 
-        {/* FINANCIAL METRICS */}
         {isAdmin && (
           <div className="space-y-3">
             <div className="flex justify-between items-center px-1">
@@ -939,7 +905,6 @@ export default function AdminApp({ currentUser, supabase }) {
           </div>
         )}
 
-        {/* TAB 1: BRANCHES & HQ MANAGEMENT */}
         {isAdmin && activeTab === 'branches' && (
           <BranchManagement 
             branches={branches}
@@ -956,7 +921,6 @@ export default function AdminApp({ currentUser, supabase }) {
           />
         )}
 
-        {/* TAB 2: INVENTORY MANAGEMENT */}
         {isAdmin && activeTab === 'inventory' && (
           <InventoryManagement 
             branches={branches}
@@ -995,7 +959,6 @@ export default function AdminApp({ currentUser, supabase }) {
           />
         )}
 
-        {/* TAB 3: SALES LEDGER */}
         {activeTab === 'customers' && (
           <SalesLedger 
             products={contextProducts}
@@ -1008,11 +971,9 @@ export default function AdminApp({ currentUser, supabase }) {
           />
         )}
 
-        {/* TAB 4: STOREFRONT PREVIEW & GLOBAL STORE CONTROL */}
         {isAdmin && activeTab === 'storefront' && (
           <div className="space-y-6">
             
-            {/* LIVE STORE CONFIGURATION CARD */}
             <div className="bg-white p-5 sm:p-6 rounded-xl border-2 border-emerald-500/20 shadow-sm bg-gradient-to-r from-emerald-50/50 to-white">
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div>
@@ -1042,7 +1003,6 @@ export default function AdminApp({ currentUser, supabase }) {
               </div>
             </div>
 
-            {/* STOREFRONT PREVIEW CATALOGUE */}
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 space-y-6">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-gray-100 pb-4">
                 <div>
@@ -1080,7 +1040,6 @@ export default function AdminApp({ currentUser, supabase }) {
                 </div>
               </div>
 
-              {/* PRODUCTS GRID */}
               {storefrontFilteredProducts.length === 0 ? (
                 <div className="text-center py-12 bg-gray-50 rounded-xl border border-dashed border-gray-200">
                   <Package className="w-10 h-10 text-gray-400 mx-auto mb-3" />
@@ -1119,7 +1078,6 @@ export default function AdminApp({ currentUser, supabase }) {
           </div>
         )}
 
-        {/* TAB 5: STAFF MANAGEMENT */}
         {isAdmin && activeTab === 'staff' && (
           <StaffManagement 
             supabase={supabase}
@@ -1144,7 +1102,6 @@ export default function AdminApp({ currentUser, supabase }) {
         )}
       </div>
 
-      {/* MULTI-PRODUCT BATCH TRANSFER MODAL */}
       <BatchTransferModal 
         batchTransferOpen={batchTransferOpen}
         setBatchTransferOpen={setBatchTransferOpen}
@@ -1162,7 +1119,6 @@ export default function AdminApp({ currentUser, supabase }) {
         batchTransferLoading={batchTransferLoading}
       />
 
-      {/* TRANSFER HISTORY & RECEIPTS MODAL */}
       <TransferHistoryModal 
         isOpen={transferHistoryOpen}
         onClose={() => setTransferHistoryOpen(false)}
@@ -1170,7 +1126,6 @@ export default function AdminApp({ currentUser, supabase }) {
         branches={branches}
       />
 
-      {/* SECURE ADMIN PIN MODAL */}
       {adminPinModalOpen && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-gray-100 space-y-4 animate-in fade-in zoom-in-95 duration-200">
