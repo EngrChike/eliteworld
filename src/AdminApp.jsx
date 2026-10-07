@@ -1144,8 +1144,8 @@ export default function AdminApp({ currentUser, supabase }) {
                   value={adminPinInput}
                   onChange={(e) => setAdminPinInput(e.target.value)}
                   className={`w-full text-center text-2xl tracking-[0.5em] font-bold p-4 border-2 rounded-xl outline-none transition-all ${adminPinError ? 'border-red-400 bg-red-50' : 'border-gray-200 focus:border-[#0f172a] focus:ring-4 focus:ring-slate-100'}`}
-                  placeholder="••••"
-                  maxLength={4}
+                  placeholder="••••••"
+                  maxLength={6}
                   autoFocus
                 />
                 {adminPinError && <p className="text-red-500 text-xs font-bold mt-2 text-center">{adminPinError}</p>}
