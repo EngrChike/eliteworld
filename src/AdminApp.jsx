@@ -159,42 +159,116 @@ export default function AdminApp({ currentUser, supabase }) {
     } catch (err) { console.error("Erreur produits:", err); }
   };
 
+  // --- BULLETPROOF CUSTOMER & SALES FETCHING ---
   const fetchCustomersFromSupabase = async () => {
     try {
-      const { data, error } = await supabase.from('customers').select('*, customer_history(*)').order('created_at', { ascending: false });
-      if (!error && data) {
-        const formatted = data.map(c => {
-          const rawHistory = c.customer_history || c.history || [];
-          const formattedHistory = rawHistory.map(h => {
-            let parsedItems = [];
-            if (h.items) {
-              if (typeof h.items === 'string') {
-                try { parsedItems = JSON.parse(h.items); } catch (e) { parsedItems = []; }
-              } else if (Array.isArray(h.items)) {
-                parsedItems = h.items;
-              }
+      let rawCustomers = [];
+      let historyData = [];
+
+      // Attempt 1: Embedded relational query
+      const { data: embedData, error: embedErr } = await supabase
+        .from('customers')
+        .select('*, customer_history(*)')
+        .order('created_at', { ascending: false });
+
+      if (!embedErr && embedData) {
+        rawCustomers = embedData;
+      } else {
+        // Attempt 2: Fallback to querying tables independently if relational embed failed
+        console.warn("Notice: Query embed for customer_history failed, falling back to multi-table fetch:", embedErr?.message);
+        const { data: cData } = await supabase.from('customers').select('*').order('created_at', { ascending: false });
+        rawCustomers = cData || [];
+
+        // Try candidate sales history table names
+        const { data: h1 } = await supabase.from('customer_history').select('*');
+        if (h1 && h1.length > 0) {
+          historyData = h1;
+        } else {
+          const { data: h2 } = await supabase.from('sales_ledger').select('*');
+          if (h2 && h2.length > 0) {
+            historyData = h2;
+          } else {
+            const { data: h3 } = await supabase.from('sales').select('*');
+            if (h3 && h3.length > 0) historyData = h3;
+          }
+        }
+
+        // Attach independently fetched sales history items to their respective customers
+        rawCustomers = rawCustomers.map(c => {
+          const cHist = historyData.filter(h => 
+            String(h.customer_id || h.customerId || h.client_id) === String(c.id)
+          );
+          return { ...c, customer_history: cHist };
+        });
+
+        // Collect orphan sales entries if customers list was empty
+        if (rawCustomers.length === 0 && historyData.length > 0) {
+          rawCustomers = [{
+            id: 'virtual_global_client',
+            name: 'Ventes Directes Client',
+            phone: '',
+            branch_id: null,
+            total_debt: 0,
+            customer_history: historyData
+          }];
+        }
+      }
+
+      const formatted = rawCustomers.map(c => {
+        const rawHistory = c.customer_history || c.history || c.sales || [];
+        const formattedHistory = rawHistory.map(h => {
+          let parsedItems = [];
+          if (h.items) {
+            if (typeof h.items === 'string') {
+              try { parsedItems = JSON.parse(h.items); } catch (e) { parsedItems = []; }
+            } else if (Array.isArray(h.items)) {
+              parsedItems = h.items;
             }
-            return {
-              ...h,
-              id: h.id,
-              total: parseFloat(h.total_amount ?? h.total ?? h.amount ?? 0),
-              items: parsedItems,
-              productId: h.product_id || h.productId
-            };
-          }).sort((a, b) => b.id - a.id);
+          }
+
+          const itemSum = parsedItems.reduce((acc, it) => {
+            const pr = parseFloat(it.price || it.unit_price || 0) || 0;
+            const qt = parseInt(it.qty || it.quantity || 1) || 1;
+            return acc + (pr * qt);
+          }, 0);
+
+          const totalAmt = parseFloat(h.total_amount ?? h.total ?? h.amount ?? h.grand_total ?? itemSum) || itemSum;
+          const paidAmt = parseFloat(h.amount_paid ?? h.paid ?? h.paid_amount ?? 0) || 0;
+          let debtAmt = parseFloat(h.debt ?? h.balance ?? h.amount_due ?? 0) || 0;
+
+          if (debtAmt === 0 && totalAmt > paidAmt && paidAmt > 0) {
+            debtAmt = totalAmt - paidAmt;
+          }
 
           return {
-            id: c.id,
-            name: c.name,
-            phone: c.phone,
-            branch_id: c.branch_id,
-            totalDebt: parseFloat(c.total_debt ?? c.totalDebt ?? c.debt ?? 0),
-            history: formattedHistory
+            ...h,
+            id: h.id,
+            total: totalAmt,
+            total_amount: totalAmt,
+            amount_paid: paidAmt,
+            debt: debtAmt,
+            items: parsedItems,
+            productId: h.product_id || h.productId
           };
-        });
-        setCustomers(formatted);
-      }
-    } catch (err) { console.error("Erreur clients:", err.message); }
+        }).sort((a, b) => b.id - a.id);
+
+        const directDebt = parseFloat(c.total_debt ?? c.totalDebt ?? c.debt ?? c.balance ?? 0) || 0;
+        const historyDebtSum = formattedHistory.reduce((acc, h) => acc + (parseFloat(h.debt) || 0), 0);
+
+        return {
+          id: c.id,
+          name: c.name,
+          phone: c.phone,
+          branch_id: c.branch_id,
+          totalDebt: Math.max(directDebt, historyDebtSum),
+          history: formattedHistory
+        };
+      });
+
+      setCustomers(formatted);
+    } catch (err) { 
+      console.error("Erreur clients:", err.message); 
+    }
   };
 
   const fetchStaffFromSupabase = async () => {
@@ -637,7 +711,7 @@ export default function AdminApp({ currentUser, supabase }) {
 
   // ---- ACCURATE FINANCIAL CALCULATIONS ----
 
-  // 1. Total Sales Revenue (Calculated cleanly across transaction history records and itemized fallback)
+  // 1. Total Sales Revenue
   const totalSalesRevenue = contextCustomers.reduce((acc, c) => {
     const customerSales = (c.history || []).reduce((hAcc, h) => {
       let rev = parseFloat(h.total ?? h.total_amount ?? h.amount ?? h.grand_total ?? h.total_price ?? 0) || 0;
@@ -655,7 +729,7 @@ export default function AdminApp({ currentUser, supabase }) {
     return acc + customerSales;
   }, 0);
 
-  // 2. Cost of Goods Sold (COGS) - Matches products by ID or Name across transaction history
+  // 2. Cost of Goods Sold (COGS)
   const totalGoodsSoldCost = contextCustomers.reduce((acc, c) => {
     const customerCOGS = (c.history || []).reduce((hAcc, h) => {
       const items = Array.isArray(h.items) ? h.items : [];
@@ -684,7 +758,7 @@ export default function AdminApp({ currentUser, supabase }) {
     return acc + customerCOGS;
   }, 0);
 
-  // 3. Total Outstanding Debts - Calculates from customer profile or unpaid transaction history
+  // 3. Total Outstanding Debts
   const totalOutstandingDebt = contextCustomers.reduce((acc, c) => {
     const directDebt = parseFloat(c.totalDebt ?? c.total_debt ?? c.debt ?? c.balance ?? c.outstanding_debt ?? 0) || 0;
     
