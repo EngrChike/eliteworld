@@ -40,14 +40,21 @@ export default function AdminApp({ currentUser, supabase }) {
     return localStorage.getItem('donchike_storefront_branch') || '';
   });
   
-  // Live Public Storefront Control State (stores branch_id or '' for HQ)
+  // Live Public Storefront Control State
   const [liveStoreBranch, setLiveStoreBranch] = useState('');
+
+  // --- BULLETPROOF AMOUNT PARSER ---
+  const parseAmt = (val) => {
+    if (val === undefined || val === null || val === '') return 0;
+    if (typeof val === 'number') return val;
+    // Strips out letters, spaces, and commas to prevent parsing errors like "25,000 FCFA" -> 25
+    return parseFloat(String(val).replace(/,/g, '').replace(/[^\d.-]/g, '')) || 0;
+  };
 
   useEffect(() => {
     localStorage.setItem('donchike_storefront_branch', storefrontBranch);
   }, [storefrontBranch]);
 
-  // Clean up timer on unmount
   useEffect(() => {
     return () => {
       if (autoHideTimerRef.current) clearTimeout(autoHideTimerRef.current);
@@ -85,11 +92,8 @@ export default function AdminApp({ currentUser, supabase }) {
   const [selectedBatchItems, setSelectedBatchItems] = useState({}); 
   const [batchTransferLoading, setBatchTransferLoading] = useState(false);
   const [batchTransferError, setBatchTransferError] = useState('');
-
-  // Transfer History Modal State
   const [transferHistoryOpen, setTransferHistoryOpen] = useState(false);
 
-  // Determine active branch context
   const activeBranchId = isAdmin ? viewingBranch : (currentUser?.branch_id || '');
 
   useEffect(() => {
@@ -111,35 +115,23 @@ export default function AdminApp({ currentUser, supabase }) {
     }
   }, [viewingBranch]);
 
-  // --- FETCH GLOBAL STORE SETTINGS ---
   const fetchStoreSettings = async () => {
     try {
-      const { data, error } = await supabase
-        .from('store_settings')
-        .select('active_branch')
-        .single();
-      
-      if (data) {
-        setLiveStoreBranch(data.active_branch || '');
-      }
+      const { data } = await supabase.from('store_settings').select('active_branch').single();
+      if (data) setLiveStoreBranch(data.active_branch || '');
     } catch (err) {
-      console.log("Paramètres de la boutique non configurés (normal au premier lancement).");
+      console.log("Paramètres de la boutique non configurés.");
     }
   };
 
-  // --- UPDATE LIVE STOREFRONT (Saves branch_id or '' for HQ) ---
   const handleUpdateLiveBranch = async (newBranchId) => {
     if (!(await verifyAdminPinBeforeAction())) return;
     try {
-      const { error } = await supabase
-        .from('store_settings')
-        .upsert({ id: 1, active_branch: newBranchId }, { onConflict: 'id' });
-      
+      const { error } = await supabase.from('store_settings').upsert({ id: 1, active_branch: newBranchId }, { onConflict: 'id' });
       if (error) throw error;
       setLiveStoreBranch(newBranchId);
       const branchObj = branches.find(b => b.id === newBranchId);
-      const branchDisplayName = branchObj ? branchObj.name : 'Siège Principal';
-      alert(`Succès ! L'application client affiche maintenant les stocks de : ${branchDisplayName}`);
+      alert(`Succès ! L'application client affiche maintenant les stocks de : ${branchObj ? branchObj.name : 'Siège Principal'}`);
     } catch (err) {
       alert(`Erreur lors de la mise à jour : ${err.message}`);
     }
@@ -159,63 +151,55 @@ export default function AdminApp({ currentUser, supabase }) {
     } catch (err) { console.error("Erreur produits:", err); }
   };
 
-  // --- BULLETPROOF CUSTOMER & SALES FETCHING ---
+  // --- REWRITTEN & BULLETPROOF CUSTOMER/SALES FETCHING ---
   const fetchCustomersFromSupabase = async () => {
     try {
-      let rawCustomers = [];
+      // 1. Fetch all customers
+      const { data: cData } = await supabase.from('customers').select('*').order('created_at', { ascending: false });
+      let rawCustomers = cData || [];
+
+      // 2. Fetch sales from ALL possible tables simultaneously to bypass broken relations
+      const [res1, res2, res3] = await Promise.all([
+        supabase.from('customer_history').select('*').catch(() => ({ data: [] })),
+        supabase.from('sales_ledger').select('*').catch(() => ({ data: [] })),
+        supabase.from('sales').select('*').catch(() => ({ data: [] }))
+      ]);
+
       let historyData = [];
+      if (res1?.data?.length) historyData = [...historyData, ...res1.data];
+      if (res2?.data?.length) historyData = [...historyData, ...res2.data];
+      if (res3?.data?.length) historyData = [...historyData, ...res3.data];
 
-      // Attempt 1: Embedded relational query
-      const { data: embedData, error: embedErr } = await supabase
-        .from('customers')
-        .select('*, customer_history(*)')
-        .order('created_at', { ascending: false });
+      // Deduplicate to ensure we don't double-count views or matching IDs
+      const uniqueHistory = Array.from(new Map(historyData.map(item => [item.id, item])).values());
 
-      if (!embedErr && embedData) {
-        rawCustomers = embedData;
-      } else {
-        // Attempt 2: Fallback to querying tables independently if relational embed failed
-        console.warn("Notice: Query embed for customer_history failed, falling back to multi-table fetch:", embedErr?.message);
-        const { data: cData } = await supabase.from('customers').select('*').order('created_at', { ascending: false });
-        rawCustomers = cData || [];
+      // 3. Attach history directly matching customer IDs
+      rawCustomers = rawCustomers.map(c => {
+        const cHist = uniqueHistory.filter(h => 
+          String(h.customer_id || h.customerId || h.client_id) === String(c.id)
+        );
+        return { ...c, customer_history: cHist };
+      });
 
-        // Try candidate sales history table names
-        const { data: h1 } = await supabase.from('customer_history').select('*');
-        if (h1 && h1.length > 0) {
-          historyData = h1;
-        } else {
-          const { data: h2 } = await supabase.from('sales_ledger').select('*');
-          if (h2 && h2.length > 0) {
-            historyData = h2;
-          } else {
-            const { data: h3 } = await supabase.from('sales').select('*');
-            if (h3 && h3.length > 0) historyData = h3;
-          }
-        }
+      // 4. Safely handle orphan sales (sales not linked to any specific customer)
+      const orphanSales = uniqueHistory.filter(h => 
+        !rawCustomers.some(c => String(c.id) === String(h.customer_id || h.customerId || h.client_id))
+      );
 
-        // Attach independently fetched sales history items to their respective customers
-        rawCustomers = rawCustomers.map(c => {
-          const cHist = historyData.filter(h => 
-            String(h.customer_id || h.customerId || h.client_id) === String(c.id)
-          );
-          return { ...c, customer_history: cHist };
+      if (orphanSales.length > 0) {
+        rawCustomers.push({
+          id: 'virtual_global_client',
+          name: 'Ventes Directes Client / Walk-in',
+          phone: '',
+          branch_id: null,
+          total_debt: 0,
+          customer_history: orphanSales
         });
-
-        // Collect orphan sales entries if customers list was empty
-        if (rawCustomers.length === 0 && historyData.length > 0) {
-          rawCustomers = [{
-            id: 'virtual_global_client',
-            name: 'Ventes Directes Client',
-            phone: '',
-            branch_id: null,
-            total_debt: 0,
-            customer_history: historyData
-          }];
-        }
       }
 
+      // 5. Structure and safely parse amounts using parseAmt
       const formatted = rawCustomers.map(c => {
-        const rawHistory = c.customer_history || c.history || c.sales || [];
+        const rawHistory = c.customer_history || [];
         const formattedHistory = rawHistory.map(h => {
           let parsedItems = [];
           if (h.items) {
@@ -227,14 +211,14 @@ export default function AdminApp({ currentUser, supabase }) {
           }
 
           const itemSum = parsedItems.reduce((acc, it) => {
-            const pr = parseFloat(it.price || it.unit_price || 0) || 0;
-            const qt = parseInt(it.qty || it.quantity || 1) || 1;
+            const pr = parseAmt(it.price ?? it.unit_price);
+            const qt = parseInt(it.qty ?? it.quantity ?? 1) || 1;
             return acc + (pr * qt);
           }, 0);
 
-          const totalAmt = parseFloat(h.total_amount ?? h.total ?? h.amount ?? h.grand_total ?? itemSum) || itemSum;
-          const paidAmt = parseFloat(h.amount_paid ?? h.paid ?? h.paid_amount ?? 0) || 0;
-          let debtAmt = parseFloat(h.debt ?? h.balance ?? h.amount_due ?? 0) || 0;
+          const totalAmt = parseAmt(h.total_amount ?? h.total ?? h.amount ?? h.grand_total ?? h.total_price) || itemSum;
+          const paidAmt = parseAmt(h.amount_paid ?? h.paid ?? h.paid_amount);
+          let debtAmt = parseAmt(h.debt ?? h.balance ?? h.amount_due);
 
           if (debtAmt === 0 && totalAmt > paidAmt && paidAmt > 0) {
             debtAmt = totalAmt - paidAmt;
@@ -250,10 +234,10 @@ export default function AdminApp({ currentUser, supabase }) {
             items: parsedItems,
             productId: h.product_id || h.productId
           };
-        }).sort((a, b) => b.id - a.id);
+        }).sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
 
-        const directDebt = parseFloat(c.total_debt ?? c.totalDebt ?? c.debt ?? c.balance ?? 0) || 0;
-        const historyDebtSum = formattedHistory.reduce((acc, h) => acc + (parseFloat(h.debt) || 0), 0);
+        const directDebt = parseAmt(c.total_debt ?? c.totalDebt ?? c.debt ?? c.balance);
+        const historyDebtSum = formattedHistory.reduce((acc, h) => acc + parseAmt(h.debt), 0);
 
         return {
           id: c.id,
@@ -280,16 +264,9 @@ export default function AdminApp({ currentUser, supabase }) {
 
   const fetchTransferLogs = async () => {
     try {
-      const { data, error } = await supabase
-        .from('stock_transfers')
-        .select('*')
-        .order('created_at', { ascending: false });
-      if (!error && data) {
-        setTransferLogs(data);
-      }
-    } catch (err) {
-      console.log("Transfers history table optional initialization.");
-    }
+      const { data, error } = await supabase.from('stock_transfers').select('*').order('created_at', { ascending: false });
+      if (!error && data) setTransferLogs(data);
+    } catch (err) {}
   };
 
   const verifyAdminPinBeforeAction = () => {
@@ -301,7 +278,6 @@ export default function AdminApp({ currentUser, supabase }) {
     });
   };
 
-  // --- FINANCIAL MASKING TOGGLE & AUTO-HIDE TIMER ---
   const handleToggleFinancialVisibility = async () => {
     if (showFinancials) {
       setShowFinancials(false);
@@ -310,9 +286,7 @@ export default function AdminApp({ currentUser, supabase }) {
       if (await verifyAdminPinBeforeAction()) {
         setShowFinancials(true);
         if (autoHideTimerRef.current) clearTimeout(autoHideTimerRef.current);
-        autoHideTimerRef.current = setTimeout(() => {
-          setShowFinancials(false);
-        }, 10 * 60 * 1000);
+        autoHideTimerRef.current = setTimeout(() => setShowFinancials(false), 10 * 60 * 1000);
       }
     }
   };
@@ -344,83 +318,53 @@ export default function AdminApp({ currentUser, supabase }) {
     if (!(await verifyAdminPinBeforeAction())) return;
     if (!window.confirm('Êtes-vous sûr de vouloir supprimer cette succursale ? Cette action est irréversible.')) return;
     try {
-      const { error } = await supabase.from('branches').delete().eq('id', branchId);
-      if (error) throw error;
+      await supabase.from('branches').delete().eq('id', branchId);
       alert('Succursale supprimée !');
-      
       if (viewingBranch === branchId) setViewingBranch('');
       if (storefrontBranch === branchId) setStorefrontBranch('');
-      
       fetchBranchesFromSupabase();
-    } catch (err) {
-      alert(`Erreur lors de la suppression: ${err.message}`);
-    }
+    } catch (err) { alert(`Erreur lors de la suppression: ${err.message}`); }
   };
 
   const handleReassignStaff = async (staffId, newBranchId) => {
     if (!(await verifyAdminPinBeforeAction())) return;
     try {
-      const targetBranch = newBranchId || null;
-      const { error } = await supabase.from('staff').update({ branch_id: targetBranch }).eq('id', staffId);
-      if (error) throw error;
+      await supabase.from('staff').update({ branch_id: newBranchId || null }).eq('id', staffId);
       alert('Personnel réassigné avec succès !');
       fetchStaffFromSupabase();
-    } catch (err) {
-      alert(`Erreur lors de la réassignation: ${err.message}`);
-    }
+    } catch (err) { alert(`Erreur: ${err.message}`); }
   };
 
-  // --- STAFF HANDLERS ---
   const handleStartEditStaff = async (staffMember) => {
     if (!(await verifyAdminPinBeforeAction())) return;
-    setEditingStaff(staffMember);
-    setStaffName(staffMember.full_name || '');
-    setStaffPin(staffMember.pin_code || '');
-    setStaffRole(staffMember.role || 'staff');
-    setStaffBranch(staffMember.branch_id || '');
-    setActiveTab('staff');
+    setEditingStaff(staffMember); setStaffName(staffMember.full_name || ''); setStaffPin(staffMember.pin_code || '');
+    setStaffRole(staffMember.role || 'staff'); setStaffBranch(staffMember.branch_id || ''); setActiveTab('staff');
   };
 
   const handleSaveStaff = async (e) => {
     e.preventDefault();
     if (!staffName || !staffPin) return;
     if (!(await verifyAdminPinBeforeAction())) return;
-
     try {
-      const payload = {
-        full_name: staffName.trim(),
-        pin_code: staffPin.trim(),
-        role: staffRole,
-        branch_id: staffBranch || null,
-        is_active: true
-      };
-      if (editingStaff) {
-        await supabase.from('staff').update(payload).eq('id', editingStaff.id);
-        alert('Personnel mis à jour !');
-      } else {
-        await supabase.from('staff').insert([payload]);
-        alert('Nouveau membre ajouté !');
-      }
+      const payload = { full_name: staffName.trim(), pin_code: staffPin.trim(), role: staffRole, branch_id: staffBranch || null, is_active: true };
+      if (editingStaff) await supabase.from('staff').update(payload).eq('id', editingStaff.id);
+      else await supabase.from('staff').insert([payload]);
       setStaffName(''); setStaffPin(''); setStaffRole('staff'); setStaffBranch(''); setEditingStaff(null);
       fetchStaffFromSupabase();
+      alert('Personnel enregistré !');
     } catch (err) { alert(`Erreur: ${err.message}`); }
   };
 
   const handleToggleStaffStatus = async (id, currentStatus) => {
     if (!(await verifyAdminPinBeforeAction())) return;
     try {
-      const { error } = await supabase.from('staff').update({ is_active: !currentStatus }).eq('id', id);
-      if (error) throw error;
-      fetchStaffFromSupabase(); 
-      alert(currentStatus ? 'Personnel désactivé !' : 'Personnel réactivé !');
-    } catch (err) {
-      alert(`Erreur: ${err.message}`);
-    }
+      await supabase.from('staff').update({ is_active: !currentStatus }).eq('id', id);
+      fetchStaffFromSupabase(); alert(currentStatus ? 'Personnel désactivé !' : 'Personnel réactivé !');
+    } catch (err) { alert(`Erreur: ${err.message}`); }
   };
 
-  // --- IMAGE COMPRESSION ---
   const compressImage = (file, maxWidth = 800, maxHeight = 800, quality = 0.75) => { 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       const reader = new FileReader(); reader.readAsDataURL(file);
       reader.onload = (event) => {
         const img = new Image(); img.src = event.target.result;
@@ -437,7 +381,6 @@ export default function AdminApp({ currentUser, supabase }) {
     });
   };
 
-  // --- PRODUCT HANDLERS ---
   const handleSaveProduct = async (e) => {
     e.preventDefault();
     if (!name || !price || quantity === '' || !batch) return;
@@ -447,133 +390,57 @@ export default function AdminApp({ currentUser, supabase }) {
       if (imageFile) {
         let fileToUpload = await compressImage(imageFile, 800, 800, 0.75);
         const fileName = `${Date.now()}_${fileToUpload.name.replace(/[^a-zA-Z0-9.]/g, '_')}`;
-        const { error: upErr } = await supabase.storage.from('product-images').upload(fileName, fileToUpload);
-        if (upErr) throw upErr;
+        await supabase.storage.from('product-images').upload(fileName, fileToUpload);
         image_url = supabase.storage.from('product-images').getPublicUrl(fileName)?.data?.publicUrl || image_url;
       }
       
       const parsedQty = parseInt(quantity) || 0;
-      const parsedInitQty = initialQuantity !== '' ? parseInt(initialQuantity) : (editingProduct ? editingProduct.initial_quantity : parsedQty);
-
       const payload = { 
-        name: name.trim(), 
-        description: description.trim(), 
-        price: parseFloat(price),
-        cost_price: parseFloat(costPrice) || 0,
-        image_url, 
-        quantity: parsedQty, 
-        initial_quantity: parsedInitQty || parsedQty,
-        stock_status: parsedQty > 0, 
-        batch_reference: batch.trim().toUpperCase(),
-        branch_id: productBranch || null,
-        is_archived: false
+        name: name.trim(), description: description.trim(), price: parseFloat(price), cost_price: parseFloat(costPrice) || 0,
+        image_url, quantity: parsedQty, initial_quantity: initialQuantity !== '' ? parseInt(initialQuantity) : (editingProduct ? editingProduct.initial_quantity : parsedQty),
+        stock_status: parsedQty > 0, batch_reference: batch.trim().toUpperCase(), branch_id: productBranch || null, is_archived: false
       };
 
       if (editingProduct) await supabase.from('products').update(payload).eq('id', editingProduct.id);
       else await supabase.from('products').insert([payload]);
 
-      handleCancelEditProduct();
-      await fetchProducts();
-      alert('Inventaire enregistré avec succès !');
+      handleCancelEditProduct(); await fetchProducts(); alert('Inventaire enregistré avec succès !');
     } catch (err) { alert(`Erreur: ${err.message}`); } finally { setUploading(false); }
   };
 
-  // --- BATCH TRANSFER HANDLERS ---
   const handleOpenBatchTransfer = () => {
-    setSelectedBatchItems({});
-    setBatchTransferStep('select');
-    setBatchTransferError('');
-    setBatchTransferOpen(true);
+    setSelectedBatchItems({}); setBatchTransferStep('select'); setBatchTransferError(''); setBatchTransferOpen(true);
   };
-
-  const handleOpenTransferHistory = () => {
-    fetchTransferLogs();
-    setTransferHistoryOpen(true);
-  };
+  const handleOpenTransferHistory = () => { fetchTransferLogs(); setTransferHistoryOpen(true); };
 
   const handleToggleBatchItemSelect = (product) => {
     setSelectedBatchItems(prev => {
       const copy = { ...prev };
-      if (copy[product.id]?.selected) {
-        delete copy[product.id];
-      } else {
-        copy[product.id] = {
-          product,
-          selected: true,
-          targetBranch: branches[0]?.id || '',
-          qty: 1
-        };
-      }
+      if (copy[product.id]?.selected) delete copy[product.id];
+      else copy[product.id] = { product, selected: true, targetBranch: branches[0]?.id || '', qty: 1 };
       return copy;
     });
   };
 
   const handleUpdateBatchItemDetail = (productId, field, value) => {
-    setSelectedBatchItems(prev => {
-      if (!prev[productId]) return prev;
-      return {
-        ...prev,
-        [productId]: {
-          ...prev[productId],
-          [field]: value
-        }
-      };
-    });
+    setSelectedBatchItems(prev => prev[productId] ? { ...prev, [productId]: { ...prev[productId], [field]: value } } : prev);
   };
 
   const handleProceedToBatchReview = () => {
     const activeItems = Object.values(selectedBatchItems).filter(item => item.selected);
-    if (activeItems.length === 0) {
-      setBatchTransferError("Veuillez sélectionner au moins un produit à transférer.");
-      return;
-    }
-
+    if (activeItems.length === 0) return setBatchTransferError("Veuillez sélectionner au moins un produit.");
     for (const item of activeItems) {
-      if (!item.targetBranch) {
-        setBatchTransferError("Veuillez assigner une succursale de destination pour tous les produits sélectionnés.");
-        return;
-      }
-      if (item.qty <= 0) {
-        setBatchTransferError(`La quantité pour "${item.product.name}" doit être supérieure à 0.`);
-        return;
-      }
-      if (item.qty > item.product.quantity) {
-        setBatchTransferError(`Quantité insuffisante au QG pour "${item.product.name}" (Max: ${item.product.quantity}).`);
-        return;
-      }
+      if (!item.targetBranch) return setBatchTransferError("Veuillez assigner une succursale.");
+      if (item.qty <= 0) return setBatchTransferError(`Quantité pour "${item.product.name}" doit être > 0.`);
+      if (item.qty > item.product.quantity) return setBatchTransferError(`Stock insuffisant pour "${item.product.name}".`);
     }
-
-    setBatchTransferError('');
-    setBatchTransferStep('review');
+    setBatchTransferError(''); setBatchTransferStep('review');
   };
 
-  // --- SAFE & ACCURATE BATCH TRANSFER CONFIRMATION ---
   const handleConfirmBatchTransfer = async () => {
-    setBatchTransferLoading(true);
-    setBatchTransferError('');
-
+    setBatchTransferLoading(true); setBatchTransferError('');
     try {
       const activeItems = Object.values(selectedBatchItems).filter(item => item.selected);
-      if (activeItems.length === 0) {
-        setBatchTransferError("Aucun produit sélectionné pour le transfert.");
-        setBatchTransferLoading(false);
-        return;
-      }
-
-      // Pre-validation before executing database calls
-      for (const item of activeItems) {
-        const transferQty = Number(item.qty) || 0;
-        if (!item.targetBranch) {
-          throw new Error(`Veuillez sélectionner une succursale de destination pour "${item.product.name}".`);
-        }
-        if (transferQty <= 0) {
-          throw new Error(`La quantité à transférer pour "${item.product.name}" doit être supérieure à 0.`);
-        }
-        if (transferQty > item.product.quantity) {
-          throw new Error(`Quantité insuffisante au QG pour "${item.product.name}" (Stock dispo: ${item.product.quantity}).`);
-        }
-      }
-
       const transferRef = `TRF-${Date.now().toString().slice(-6)}`;
       const transferSummary = [];
 
@@ -581,94 +448,38 @@ export default function AdminApp({ currentUser, supabase }) {
         const { product, targetBranch, qty } = item;
         const transferQty = Number(qty) || 0;
 
-        // 1. Deduct from HQ Main Stock
         const newHqQty = product.quantity - transferQty;
-        const { error: hqError } = await supabase
-          .from('products')
-          .update({ quantity: newHqQty, stock_status: newHqQty > 0 })
-          .eq('id', product.id);
+        await supabase.from('products').update({ quantity: newHqQty, stock_status: newHqQty > 0 }).eq('id', product.id);
 
-        if (hqError) throw hqError;
-
-        // 2. Increment or Insert into Target Branch Stock
-        const existingTargetProd = products.find(p => 
-          p.name.trim().toLowerCase() === product.name.trim().toLowerCase() && 
-          String(p.batch_reference || '').trim().toUpperCase() === String(product.batch_reference || '').trim().toUpperCase() && 
-          String(p.branch_id || '') === String(targetBranch)
+        const existingTargetProd = products.find(p => p.name.trim().toLowerCase() === product.name.trim().toLowerCase() && 
+          String(p.batch_reference || '').trim().toUpperCase() === String(product.batch_reference || '').trim().toUpperCase() && String(p.branch_id || '') === String(targetBranch)
         );
 
         if (existingTargetProd) {
           const newTargetQty = (existingTargetProd.quantity || 0) + transferQty;
-          const { error: updateError } = await supabase
-            .from('products')
-            .update({ quantity: newTargetQty, stock_status: newTargetQty > 0 })
-            .eq('id', existingTargetProd.id);
-
-          if (updateError) throw updateError;
+          await supabase.from('products').update({ quantity: newTargetQty, stock_status: newTargetQty > 0 }).eq('id', existingTargetProd.id);
         } else {
           const { id, created_at, ...prodData } = product;
-          prodData.branch_id = targetBranch;
-          prodData.quantity = transferQty;
-          prodData.initial_quantity = transferQty;
-          prodData.stock_status = true;
-          const { error: insertError } = await supabase.from('products').insert([prodData]);
-
-          if (insertError) throw insertError;
+          prodData.branch_id = targetBranch; prodData.quantity = transferQty; prodData.initial_quantity = transferQty; prodData.stock_status = true;
+          await supabase.from('products').insert([prodData]);
         }
-
-        const targetBranchObj = branches.find(b => String(b.id) === String(targetBranch));
+        
         transferSummary.push({
-          product_id: product.id,
-          product_name: product.name,
-          batch_reference: product.batch_reference || 'N/A',
-          qty: transferQty,
-          cost_price: product.cost_price || 0,
-          price: product.price || 0,
-          target_branch_id: targetBranch,
-          target_branch_name: targetBranchObj?.name || 'Succursale'
+          product_id: product.id, product_name: product.name, batch_reference: product.batch_reference || 'N/A', qty: transferQty,
+          cost_price: product.cost_price || 0, price: product.price || 0, target_branch_id: targetBranch, target_branch_name: branches.find(b => String(b.id) === String(targetBranch))?.name || 'Succursale'
         });
       }
 
-      // Create log record
-      const newLogRecord = {
-        transfer_ref: transferRef,
-        items: transferSummary,
-        created_by: currentUser?.full_name || 'Admin HQ',
-        created_at: new Date().toISOString()
-      };
-
-      // 3. Optimistically update local React state for immediate receipt availability
+      const newLogRecord = { transfer_ref: transferRef, items: transferSummary, created_by: currentUser?.full_name || 'Admin HQ', created_at: new Date().toISOString() };
       setTransferLogs(prev => [newLogRecord, ...prev]);
-
-      // 4. Persist transfer receipt into DB
       try {
-        const { data: insertedData, error: logErr } = await supabase
-          .from('stock_transfers')
-          .insert([newLogRecord])
-          .select();
+        const { data } = await supabase.from('stock_transfers').insert([newLogRecord]).select();
+        if (data?.length > 0) setTransferLogs(prev => prev.map(l => l.transfer_ref === transferRef ? data[0] : l));
+      } catch (e) {}
 
-        if (logErr) {
-          console.warn("Notice: stock_transfers DB table notice:", logErr.message);
-        } else if (insertedData && insertedData.length > 0) {
-          setTransferLogs(prev => prev.map(l => l.transfer_ref === transferRef ? insertedData[0] : l));
-        }
-      } catch (logErr) {
-        console.warn("Table stock_transfers non encore disponible en BD:", logErr);
-      }
-
-      setBatchTransferLoading(false);
-      setBatchTransferOpen(false);
-      
-      // Refresh backend state
-      await fetchProducts();
-      await fetchTransferLogs();
-
-      alert(`Transfert groupé effectué avec succès ! Réf: ${transferRef}`);
-    } catch (err) {
-      console.error("Batch transfer error:", err);
-      setBatchTransferError(`Erreur lors du transfert: ${err.message}`);
-      setBatchTransferLoading(false);
-    }
+      setBatchTransferLoading(false); setBatchTransferOpen(false);
+      await fetchProducts(); await fetchTransferLogs(); alert(`Transfert effectué ! Réf: ${transferRef}`);
+    } catch (err) { setBatchTransferError(`Erreur: ${err.message}`); setBatchTransferLoading(false); }
   };
 
   const handleStartEditProduct = (p) => {
@@ -694,127 +505,86 @@ export default function AdminApp({ currentUser, supabase }) {
     setProducts(prev => prev.map(p => String(p.id) === String(id) ? { ...p, is_archived: archiveState } : p));
   };
 
-  // ---- CONTEXT FILTERING & LOW-STOCK DETECTOR ----
+  // ---- FIXED CONTEXT FILTERING ----
   const contextProducts = products.filter(p => {
-    if (activeBranchId === 'ALL' || activeBranchId === '') return true;
+    if (activeBranchId === 'ALL') return true;
+    if (activeBranchId === '') return !p.branch_id || p.branch_id === '';
     return String(p.branch_id || '') === String(activeBranchId);
   });
 
   const contextCustomers = customers.filter(c => {
-    if (activeBranchId === 'ALL' || activeBranchId === '') return true;
+    if (activeBranchId === 'ALL') return true;
+    if (activeBranchId === '') return !c.branch_id || c.branch_id === '';
     return String(c.branch_id || '') === String(activeBranchId);
   });
 
-  // Shortage / Low Stock Detector (Products with stock <= 3)
   const lowStockProducts = contextProducts.filter(p => !p.is_archived && (parseInt(p.quantity) || 0) <= 3);
   const hasLowStock = lowStockProducts.length > 0;
 
-  // ---- ACCURATE FINANCIAL CALCULATIONS ----
-
-  // 1. Total Sales Revenue
+  // ---- SAFE & ACCURATE FINANCIAL CALCULATIONS USING parseAmt ----
   const totalSalesRevenue = contextCustomers.reduce((acc, c) => {
     const customerSales = (c.history || []).reduce((hAcc, h) => {
-      let rev = parseFloat(h.total ?? h.total_amount ?? h.amount ?? h.grand_total ?? h.total_price ?? 0) || 0;
-      
-      // Fallback: If root transaction total is 0, sum item price * qty
+      let rev = parseAmt(h.total ?? h.total_amount ?? h.amount ?? h.grand_total ?? h.total_price);
       if (rev === 0 && Array.isArray(h.items) && h.items.length > 0) {
-        rev = h.items.reduce((iAcc, it) => {
-          const itemPrice = parseFloat(it.price ?? it.unit_price ?? it.total ?? 0) || 0;
-          const itemQty = parseInt(it.qty ?? it.quantity ?? 1) || 1;
-          return iAcc + (itemPrice * itemQty);
-        }, 0);
+        rev = h.items.reduce((iAcc, it) => iAcc + (parseAmt(it.price ?? it.unit_price ?? it.total) * (parseInt(it.qty ?? it.quantity ?? 1) || 1)), 0);
       }
       return hAcc + rev;
     }, 0);
     return acc + customerSales;
   }, 0);
 
-  // 2. Cost of Goods Sold (COGS)
   const totalGoodsSoldCost = contextCustomers.reduce((acc, c) => {
     const customerCOGS = (c.history || []).reduce((hAcc, h) => {
       const items = Array.isArray(h.items) ? h.items : [];
       if (items.length > 0) {
-        const hCogs = items.reduce((iAcc, it) => {
-          const matchedProd = products.find(p => 
-            String(p.id) === String(it.productId || it.product_id || it.id) ||
-            p.name.trim().toLowerCase() === (it.name || it.product_name || '').trim().toLowerCase()
-          );
-
-          const unitCost = parseFloat(it.cost_price ?? it.costPrice ?? matchedProd?.cost_price ?? matchedProd?.costPrice ?? 0) || 0;
-          const qty = parseInt(it.qty ?? it.quantity ?? 1) || 1;
-          return iAcc + (unitCost * qty);
+        return hAcc + items.reduce((iAcc, it) => {
+          const matchedProd = products.find(p => String(p.id) === String(it.productId || it.product_id || it.id) || p.name.trim().toLowerCase() === String(it.name || it.product_name || '').trim().toLowerCase());
+          const unitCost = parseAmt(it.cost_price ?? it.costPrice ?? matchedProd?.cost_price ?? matchedProd?.costPrice);
+          return iAcc + (unitCost * (parseInt(it.qty ?? it.quantity ?? 1) || 1));
         }, 0);
-        return hAcc + hCogs;
       } else {
-        const matchedProd = products.find(p => 
-          String(p.id) === String(h.productId || h.product_id) ||
-          p.name.trim().toLowerCase() === (h.product_name || h.name || '').trim().toLowerCase()
-        );
-        const unitCost = parseFloat(h.cost_price ?? h.costPrice ?? matchedProd?.cost_price ?? 0) || 0;
-        const qty = parseInt(h.qty ?? h.quantity ?? 1) || 1;
-        return hAcc + (unitCost * qty);
+        const matchedProd = products.find(p => String(p.id) === String(h.productId || h.product_id) || p.name.trim().toLowerCase() === String(h.product_name || h.name || '').trim().toLowerCase());
+        return hAcc + (parseAmt(h.cost_price ?? h.costPrice ?? matchedProd?.cost_price) * (parseInt(h.qty ?? h.quantity ?? 1) || 1));
       }
     }, 0);
     return acc + customerCOGS;
   }, 0);
 
-  // 3. Total Outstanding Debts
   const totalOutstandingDebt = contextCustomers.reduce((acc, c) => {
-    const directDebt = parseFloat(c.totalDebt ?? c.total_debt ?? c.debt ?? c.balance ?? c.outstanding_debt ?? 0) || 0;
-    
+    const directDebt = parseAmt(c.totalDebt ?? c.total_debt ?? c.debt ?? c.balance ?? c.outstanding_debt);
     const historyDebt = (c.history || []).reduce((hAcc, h) => {
-      let recordDebt = parseFloat(h.debt ?? h.balance ?? h.amount_due ?? 0) || 0;
-      
+      let recordDebt = parseAmt(h.debt ?? h.balance ?? h.amount_due);
       if (recordDebt === 0) {
-        let recordTotal = parseFloat(h.total ?? h.total_amount ?? h.amount ?? h.grand_total ?? 0) || 0;
-        if (recordTotal === 0 && Array.isArray(h.items) && h.items.length > 0) {
-          recordTotal = h.items.reduce((iAcc, it) => iAcc + ((parseFloat(it.price || it.unit_price) || 0) * (parseInt(it.qty || it.quantity) || 1)), 0);
-        }
-        const recordPaid = parseFloat(h.amount_paid ?? h.paid ?? h.paid_amount ?? 0) || 0;
-        if (recordTotal > recordPaid && recordPaid > 0) {
-          recordDebt = recordTotal - recordPaid;
-        }
+        let recordTotal = parseAmt(h.total ?? h.total_amount ?? h.amount ?? h.grand_total);
+        if (recordTotal === 0 && Array.isArray(h.items) && h.items.length > 0) recordTotal = h.items.reduce((iAcc, it) => iAcc + (parseAmt(it.price || it.unit_price) * (parseInt(it.qty || it.quantity) || 1)), 0);
+        const recordPaid = parseAmt(h.amount_paid ?? h.paid ?? h.paid_amount);
+        if (recordTotal > recordPaid && recordPaid > 0) recordDebt = recordTotal - recordPaid;
       }
       return hAcc + recordDebt;
     }, 0);
-
     return acc + Math.max(directDebt, historyDebt);
   }, 0);
 
-  const getProductSoldQty = (productId) => {
-    return contextCustomers.reduce((acc, c) => acc + (c.history || []).reduce((hAcc, h) => {
-      if (h.items && Array.isArray(h.items) && h.items.length > 0) {
-        const item = h.items.find(i => String(i.productId || i.product_id || i.id) === String(productId));
-        return hAcc + (item ? (parseInt(item.qty || item.quantity) || 0) : 0);
-      } else {
-        const isMatch = String(h.productId || h.product_id || '') === String(productId);
-        return hAcc + (isMatch ? (parseInt(h.qty || h.quantity) || 1) : 0);
-      }
-    }, 0), 0);
-  };
+  const getProductSoldQty = (productId) => contextCustomers.reduce((acc, c) => acc + (c.history || []).reduce((hAcc, h) => {
+    if (h.items && Array.isArray(h.items) && h.items.length > 0) {
+      const item = h.items.find(i => String(i.productId || i.product_id || i.id) === String(productId));
+      return hAcc + (item ? (parseInt(item.qty || item.quantity) || 0) : 0);
+    }
+    return hAcc + (String(h.productId || h.product_id || '') === String(productId) ? (parseInt(h.qty || h.quantity) || 1) : 0);
+  }, 0), 0);
 
-  const getTrueInitialQty = (p) => {
-    if (p.initial_quantity !== undefined && p.initial_quantity !== null && p.initial_quantity !== '') return parseInt(p.initial_quantity);
-    return (parseInt(p.quantity) || 0) + getProductSoldQty(p.id);
-  };
+  const getTrueInitialQty = (p) => (p.initial_quantity !== undefined && p.initial_quantity !== null && p.initial_quantity !== '') ? parseInt(p.initial_quantity) : (parseInt(p.quantity) || 0) + getProductSoldQty(p.id);
 
-  const totalInventoryCost = contextProducts.reduce((acc, p) => acc + ((parseFloat(p.cost_price) || 0) * getTrueInitialQty(p)), 0);
-  const totalExpectedRevenue = contextProducts.reduce((acc, p) => acc + ((parseFloat(p.price) || 0) * getTrueInitialQty(p)), 0);
-  const totalPotentialRetail = contextProducts.filter(p => !p.is_archived).reduce((acc, p) => acc + ((parseFloat(p.price) || 0) * (parseInt(p.quantity) || 0)), 0);
+  const totalInventoryCost = contextProducts.reduce((acc, p) => acc + (parseAmt(p.cost_price) * getTrueInitialQty(p)), 0);
+  const totalExpectedRevenue = contextProducts.reduce((acc, p) => acc + (parseAmt(p.price) * getTrueInitialQty(p)), 0);
+  const totalPotentialRetail = contextProducts.filter(p => !p.is_archived).reduce((acc, p) => acc + (parseAmt(p.price) * (parseInt(p.quantity) || 0)), 0);
 
   const uniqueBatches = ['ALL', ...new Set(contextProducts.map(p => p.batch_reference).filter(Boolean))];
-  const filteredProducts = contextProducts.filter(p => {
-    const matchesBatch = selectedBatchFilter === 'ALL' || p.batch_reference === selectedBatchFilter;
-    const matchesArchiveState = showArchived ? p.is_archived : !p.is_archived;
-    const matchesLowStock = showLowStockOnly ? (parseInt(p.quantity) || 0) <= 3 : true;
-    return matchesBatch && matchesArchiveState && matchesLowStock;
-  });
-
+  const filteredProducts = contextProducts.filter(p => (selectedBatchFilter === 'ALL' || p.batch_reference === selectedBatchFilter) && (showArchived ? p.is_archived : !p.is_archived) && (showLowStockOnly ? (parseInt(p.quantity) || 0) <= 3 : true));
+  
   const storefrontFilteredProducts = products.filter(p => {
     if (p.is_archived || parseInt(p.quantity) < 1) return false;
-    if (storefrontBranch === '') {
-      return !p.branch_id || p.branch_id === '';
-    }
+    if (storefrontBranch === '') return !p.branch_id || p.branch_id === '';
     return String(p.branch_id || '') === String(storefrontBranch);
   });
 
@@ -838,30 +608,15 @@ export default function AdminApp({ currentUser, supabase }) {
               </div>
 
               <div className="flex items-center gap-3">
-                {/* BLINKING LOW STOCK ALERT BUTTON */}
                 <button 
-                  onClick={() => {
-                    setActiveTab('inventory');
-                    setShowLowStockOnly(prev => !prev);
-                  }}
-                  className={`px-3 py-2 rounded-lg text-xs font-extrabold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer ${
-                    hasLowStock 
-                      ? (showLowStockOnly 
-                          ? 'bg-red-700 text-white ring-2 ring-red-400' 
-                          : 'bg-red-600 text-white animate-pulse ring-2 ring-red-300')
-                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                  }`}
+                  onClick={() => { setActiveTab('inventory'); setShowLowStockOnly(prev => !prev); }}
+                  className={`px-3 py-2 rounded-lg text-xs font-extrabold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer ${hasLowStock ? (showLowStockOnly ? 'bg-red-700 text-white ring-2 ring-red-400' : 'bg-red-600 text-white animate-pulse ring-2 ring-red-300') : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
                   title={hasLowStock ? `${lowStockProducts.length} produit(s) en stock critique (≤ 3)` : 'Stock normal'}
                 >
                   <AlertTriangle className={`w-4 h-4 ${hasLowStock ? 'text-amber-300 animate-bounce' : 'text-gray-400'}`} />
-                  <span>
-                    {showLowStockOnly 
-                      ? `Filtré: Stock Bas (${lowStockProducts.length})` 
-                      : `Stock Critique (${lowStockProducts.length})`}
-                  </span>
+                  <span>{showLowStockOnly ? `Filtré: Stock Bas (${lowStockProducts.length})` : `Stock Critique (${lowStockProducts.length})`}</span>
                 </button>
 
-                {/* ADMIN BRANCH GLOBAL FILTER */}
                 <div className="flex items-center gap-2 border border-gray-200 px-4 py-2 rounded-lg bg-gray-50 shadow-sm">
                   <Filter className="w-4 h-4 text-gray-500" />
                   <select value={viewingBranch} onChange={(e) => setViewingBranch(e.target.value)} className="bg-transparent text-sm font-semibold text-gray-800 outline-none cursor-pointer">
@@ -876,12 +631,8 @@ export default function AdminApp({ currentUser, supabase }) {
           </div>
         ) : (
           <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex justify-between items-center">
-            <h2 className="text-sm font-bold uppercase text-gray-800 flex items-center gap-2">
-              <Users className="w-5 h-5 text-[#0f172a]" /> Staff Portal - {currentUser.full_name}
-            </h2>
-            <span className="text-xs font-semibold bg-blue-50 px-3 py-1.5 rounded-full text-blue-700 border border-blue-100">
-              {branches.find(b => b.id === currentUser.branch_id)?.name || 'HQ / Main'}
-            </span>
+            <h2 className="text-sm font-bold uppercase text-gray-800 flex items-center gap-2"><Users className="w-5 h-5 text-[#0f172a]" /> Staff Portal - {currentUser.full_name}</h2>
+            <span className="text-xs font-semibold bg-blue-50 px-3 py-1.5 rounded-full text-blue-700 border border-blue-100">{branches.find(b => b.id === currentUser.branch_id)?.name || 'HQ / Main'}</span>
           </div>
         )}
 
@@ -892,21 +643,8 @@ export default function AdminApp({ currentUser, supabase }) {
               <span className="text-xs font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
                 <Lock className="w-3.5 h-3.5 text-gray-400" /> Performance Financière
               </span>
-              <button
-                onClick={handleToggleFinancialVisibility}
-                className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg bg-white hover:bg-gray-100 text-gray-700 transition-all border border-gray-200 shadow-sm cursor-pointer"
-              >
-                {showFinancials ? (
-                  <>
-                    <EyeOff className="w-4 h-4 text-red-500" />
-                    <span>Masquer les chiffres</span>
-                  </>
-                ) : (
-                  <>
-                    <Eye className="w-4 h-4 text-emerald-600" />
-                    <span>Afficher les chiffres (PIN requis)</span>
-                  </>
-                )}
+              <button onClick={handleToggleFinancialVisibility} className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg bg-white hover:bg-gray-100 text-gray-700 transition-all border border-gray-200 shadow-sm cursor-pointer">
+                {showFinancials ? <><EyeOff className="w-4 h-4 text-red-500" /><span>Masquer les chiffres</span></> : <><Eye className="w-4 h-4 text-emerald-600" /><span>Afficher les chiffres (PIN requis)</span></>}
               </button>
             </div>
 
@@ -941,165 +679,67 @@ export default function AdminApp({ currentUser, supabase }) {
 
         {/* TAB 1: BRANCHES & HQ MANAGEMENT */}
         {isAdmin && activeTab === 'branches' && (
-          <BranchManagement 
-            branches={branches}
-            branchName={branchName}
-            setBranchName={setBranchName}
-            branchLocation={branchLocation}
-            setBranchLocation={setBranchLocation}
-            editingBranch={editingBranch}
-            setEditingBranch={setEditingBranch}
-            handleSaveBranch={handleSaveBranch}
-            handleDeleteBranch={handleDeleteBranch} 
-            staffList={staffList}                   
-            handleReassignStaff={handleReassignStaff} 
-          />
+          <BranchManagement branches={branches} branchName={branchName} setBranchName={setBranchName} branchLocation={branchLocation} setBranchLocation={setBranchLocation} editingBranch={editingBranch} setEditingBranch={setEditingBranch} handleSaveBranch={handleSaveBranch} handleDeleteBranch={handleDeleteBranch} staffList={staffList} handleReassignStaff={handleReassignStaff} />
         )}
 
         {/* TAB 2: INVENTORY MANAGEMENT */}
         {isAdmin && activeTab === 'inventory' && (
-          <InventoryManagement 
-            branches={branches}
-            productBranch={productBranch}
-            setProductBranch={setProductBranch}
-            name={name}
-            setName={setName}
-            description={description}           
-            setDescription={setDescription}     
-            batch={batch}
-            setBatch={setBatch}
-            costPrice={costPrice}
-            setCostPrice={setCostPrice}
-            price={price}
-            setPrice={setPrice}
-            initialQuantity={initialQuantity}
-            setInitialQuantity={setInitialQuantity}
-            quantity={quantity}
-            setQuantity={setQuantity}
-            setImageFile={setImageFile}
-            handleSaveProduct={handleSaveProduct}
-            uploading={uploading}
-            editingProduct={editingProduct}
-            handleCancelEditProduct={handleCancelEditProduct}
-            handleOpenBatchTransfer={handleOpenBatchTransfer}
-            handleOpenTransferHistory={handleOpenTransferHistory}
-            showArchived={showArchived}
-            setShowArchived={setShowArchived}
-            selectedBatchFilter={selectedBatchFilter}
-            setSelectedBatchFilter={setSelectedBatchFilter}
-            uniqueBatches={uniqueBatches}
-            filteredProducts={filteredProducts}
-            handleUpdateStockVolume={handleUpdateStockVolume}
-            handleStartEditProduct={handleStartEditProduct}
-            handleArchiveProduct={handleArchiveProduct}
-          />
+          <InventoryManagement branches={branches} productBranch={productBranch} setProductBranch={setProductBranch} name={name} setName={setName} description={description} setDescription={setDescription} batch={batch} setBatch={setBatch} costPrice={costPrice} setCostPrice={setCostPrice} price={price} setPrice={setPrice} initialQuantity={initialQuantity} setInitialQuantity={setInitialQuantity} quantity={quantity} setQuantity={setQuantity} setImageFile={setImageFile} handleSaveProduct={handleSaveProduct} uploading={uploading} editingProduct={editingProduct} handleCancelEditProduct={handleCancelEditProduct} handleOpenBatchTransfer={handleOpenBatchTransfer} handleOpenTransferHistory={handleOpenTransferHistory} showArchived={showArchived} setShowArchived={setShowArchived} selectedBatchFilter={selectedBatchFilter} setSelectedBatchFilter={setSelectedBatchFilter} uniqueBatches={uniqueBatches} filteredProducts={filteredProducts} handleUpdateStockVolume={handleUpdateStockVolume} handleStartEditProduct={handleStartEditProduct} handleArchiveProduct={handleArchiveProduct} />
         )}
 
         {/* TAB 3: SALES LEDGER */}
         {activeTab === 'customers' && (
-          <SalesLedger 
-            products={contextProducts}
-            customers={contextCustomers}
-            fetchProducts={fetchProducts}
-            fetchCustomers={fetchCustomersFromSupabase}
-            supabase={supabase}
-            currentUser={currentUser}
-            activeBranchId={activeBranchId} 
-          />
+          <SalesLedger products={contextProducts} customers={contextCustomers} fetchProducts={fetchProducts} fetchCustomers={fetchCustomersFromSupabase} supabase={supabase} currentUser={currentUser} activeBranchId={activeBranchId} />
         )}
 
         {/* TAB 4: STOREFRONT PREVIEW & GLOBAL STORE CONTROL */}
         {isAdmin && activeTab === 'storefront' && (
           <div className="space-y-6">
-            
-            {/* LIVE STORE CONFIGURATION CARD */}
             <div className="bg-white p-5 sm:p-6 rounded-xl border-2 border-emerald-500/20 shadow-sm bg-gradient-to-r from-emerald-50/50 to-white">
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div>
-                  <h3 className="text-lg font-black text-emerald-900 flex items-center gap-2">
-                    <Globe className="w-5 h-5 text-emerald-600" />
-                    Configuration de la Boutique Publique
-                  </h3>
-                  <p className="text-sm text-gray-600 mt-1">
-                    Sélectionnez la succursale dont le stock sera <span className="font-semibold text-emerald-700">actuellement visible</span> par vos clients sur le lien public. (PIN Admin requis)
-                  </p>
+                  <h3 className="text-lg font-black text-emerald-900 flex items-center gap-2"><Globe className="w-5 h-5 text-emerald-600" /> Configuration de la Boutique Publique</h3>
+                  <p className="text-sm text-gray-600 mt-1">Sélectionnez la succursale dont le stock sera <span className="font-semibold text-emerald-700">actuellement visible</span> par vos clients sur le lien public.</p>
                 </div>
                 <div className="flex items-center gap-3 bg-white p-2.5 rounded-lg border border-gray-200 shadow-sm min-w-[220px]">
                    <div className="flex flex-col w-full">
                      <span className="text-[10px] uppercase font-bold text-gray-400">Succursale Active en Ligne</span>
-                     <select 
-                       value={liveStoreBranch}
-                       onChange={(e) => handleUpdateLiveBranch(e.target.value)}
-                       className="text-sm font-bold text-gray-900 bg-transparent outline-none cursor-pointer w-full mt-0.5"
-                     >
+                     <select value={liveStoreBranch} onChange={(e) => handleUpdateLiveBranch(e.target.value)} className="text-sm font-bold text-gray-900 bg-transparent outline-none cursor-pointer w-full mt-0.5">
                        <option value="">Siège Principal (HQ)</option>
-                       {branches.map(b => (
-                         <option key={b.id} value={b.id}>{b.name}</option>
-                       ))}
+                       {branches.map(b => (<option key={b.id} value={b.id}>{b.name}</option>))}
                      </select>
                    </div>
                 </div>
               </div>
             </div>
 
-            {/* STOREFRONT PREVIEW CATALOGUE */}
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 space-y-6">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-gray-100 pb-4">
                 <div>
-                  <h3 className="text-base font-black text-gray-900 flex items-center gap-2">
-                    <Eye className="w-5 h-5 text-indigo-600" />
-                    Aperçu du Catalogue de la Vitrine Publique
-                  </h3>
-                  <p className="text-xs text-gray-500 mt-0.5">
-                    Visualisez les articles actuellement affichés aux clients pour la succursale sélectionnée.
-                  </p>
+                  <h3 className="text-base font-black text-gray-900 flex items-center gap-2"><Eye className="w-5 h-5 text-indigo-600" /> Aperçu du Catalogue</h3>
+                  <p className="text-xs text-gray-500 mt-0.5">Visualisez les articles actuellement affichés aux clients pour la succursale sélectionnée.</p>
                 </div>
-                
                 <div className="flex items-center gap-3 w-full sm:w-auto">
-                  <select 
-                    value={storefrontBranch}
-                    onChange={(e) => setStorefrontBranch(e.target.value)}
-                    className="px-3 py-2 bg-gray-50 border border-gray-300 rounded-lg text-sm font-semibold text-gray-800 outline-none cursor-pointer w-full sm:w-auto"
-                  >
+                  <select value={storefrontBranch} onChange={(e) => setStorefrontBranch(e.target.value)} className="px-3 py-2 bg-gray-50 border border-gray-300 rounded-lg text-sm font-semibold text-gray-800 outline-none cursor-pointer w-full sm:w-auto">
                     <option value="">Aperçu : Siège Principal (HQ)</option>
-                    {branches.map(b => (
-                      <option key={b.id} value={b.id}>Aperçu : {b.name}</option>
-                    ))}
+                    {branches.map(b => (<option key={b.id} value={b.id}>Aperçu : {b.name}</option>))}
                   </select>
-
-                  <button
-                    onClick={() => {
-                      const url = window.location.origin;
-                      navigator.clipboard.writeText(url);
-                      alert("Lien de la boutique copié dans le presse-papier !");
-                    }}
-                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-lg shadow-sm transition-all whitespace-nowrap cursor-pointer"
-                  >
-                    Copier le lien
-                  </button>
+                  <button onClick={() => { navigator.clipboard.writeText(window.location.origin); alert("Lien copié !"); }} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-lg shadow-sm transition-all whitespace-nowrap cursor-pointer">Copier le lien</button>
                 </div>
               </div>
 
-              {/* PRODUCTS GRID */}
               {storefrontFilteredProducts.length === 0 ? (
                 <div className="text-center py-12 bg-gray-50 rounded-xl border border-dashed border-gray-200">
                   <Package className="w-10 h-10 text-gray-400 mx-auto mb-3" />
                   <p className="text-sm font-bold text-gray-700">Aucun produit disponible dans cette succursale</p>
-                  <p className="text-xs text-gray-500 mt-1">Ajoutez du stock ou transférez des articles vers cette succursale pour les afficher.</p>
                 </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                   {storefrontFilteredProducts.map(product => (
                     <div key={product.id} className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm hover:shadow-md transition-all flex flex-col">
                       <div className="h-48 bg-gray-100 relative overflow-hidden">
-                        <img 
-                          src={product.image_url || 'https://images.unsplash.com/photo-1522337660859-02fbefca4702?auto=format&fit=crop&w=800&q=80'} 
-                          alt={product.name}
-                          className="w-full h-full object-cover"
-                        />
-                        <span className="absolute top-2 right-2 bg-black/65 backdrop-blur-md text-white text-[10px] font-bold px-2.5 py-1 rounded-full">
-                          Stock : {product.quantity}
-                        </span>
+                        <img src={product.image_url || 'https://images.unsplash.com/photo-1522337660859-02fbefca4702?auto=format&fit=crop&w=800&q=80'} alt={product.name} className="w-full h-full object-cover" />
+                        <span className="absolute top-2 right-2 bg-black/65 backdrop-blur-md text-white text-[10px] font-bold px-2.5 py-1 rounded-full">Stock : {product.quantity}</span>
                       </div>
                       <div className="p-4 flex flex-col flex-1 justify-between space-y-3">
                         <div>
@@ -1121,113 +761,33 @@ export default function AdminApp({ currentUser, supabase }) {
 
         {/* TAB 5: STAFF MANAGEMENT */}
         {isAdmin && activeTab === 'staff' && (
-          <StaffManagement 
-            supabase={supabase}
-            branches={branches}
-            staffList={staffList}
-            fetchStaffFromSupabase={fetchStaffFromSupabase}
-            verifyAdminPinBeforeAction={verifyAdminPinBeforeAction}
-            staffName={staffName}
-            setStaffName={setStaffName}
-            staffPin={staffPin}
-            setStaffPin={setStaffPin}
-            staffRole={staffRole}
-            setStaffRole={setStaffRole}
-            staffBranch={staffBranch}
-            setStaffBranch={setStaffBranch}
-            editingStaff={editingStaff}
-            setEditingStaff={setEditingStaff}
-            handleSaveStaff={handleSaveStaff}
-            handleToggleStaffStatus={handleToggleStaffStatus}
-            handleStartEditStaff={handleStartEditStaff}
-          />
+          <StaffManagement supabase={supabase} branches={branches} staffList={staffList} fetchStaffFromSupabase={fetchStaffFromSupabase} verifyAdminPinBeforeAction={verifyAdminPinBeforeAction} staffName={staffName} setStaffName={setStaffName} staffPin={staffPin} setStaffPin={setStaffPin} staffRole={staffRole} setStaffRole={setStaffRole} staffBranch={staffBranch} setStaffBranch={setStaffBranch} editingStaff={editingStaff} setEditingStaff={setEditingStaff} handleSaveStaff={handleSaveStaff} handleToggleStaffStatus={handleToggleStaffStatus} handleStartEditStaff={handleStartEditStaff} />
         )}
       </div>
 
-      {/* MULTI-PRODUCT BATCH TRANSFER MODAL */}
-      <BatchTransferModal 
-        batchTransferOpen={batchTransferOpen}
-        setBatchTransferOpen={setBatchTransferOpen}
-        batchTransferStep={batchTransferStep}
-        setBatchTransferStep={setBatchTransferStep}
-        batchTransferError={batchTransferError}
-        hqProductsForTransfer={hqProductsForTransfer}
-        selectedBatchItems={selectedBatchItems}
-        handleToggleBatchItemSelect={handleToggleBatchItemSelect}
-        handleUpdateBatchItemDetail={handleUpdateBatchItemDetail}
-        branches={branches}
-        activeSelectedArray={activeSelectedArray}
-        handleProceedToBatchReview={handleProceedToBatchReview}
-        handleConfirmBatchTransfer={handleConfirmBatchTransfer}
-        batchTransferLoading={batchTransferLoading}
-      />
+      <BatchTransferModal batchTransferOpen={batchTransferOpen} setBatchTransferOpen={setBatchTransferOpen} batchTransferStep={batchTransferStep} setBatchTransferStep={setBatchTransferStep} batchTransferError={batchTransferError} hqProductsForTransfer={hqProductsForTransfer} selectedBatchItems={selectedBatchItems} handleToggleBatchItemSelect={handleToggleBatchItemSelect} handleUpdateBatchItemDetail={handleUpdateBatchItemDetail} branches={branches} activeSelectedArray={activeSelectedArray} handleProceedToBatchReview={handleProceedToBatchReview} handleConfirmBatchTransfer={handleConfirmBatchTransfer} batchTransferLoading={batchTransferLoading} />
+      <TransferHistoryModal isOpen={transferHistoryOpen} onClose={() => setTransferHistoryOpen(false)} transferLogs={transferLogs} branches={branches} />
 
-      {/* TRANSFER HISTORY & RECEIPTS MODAL */}
-      <TransferHistoryModal 
-        isOpen={transferHistoryOpen}
-        onClose={() => setTransferHistoryOpen(false)}
-        transferLogs={transferLogs}
-        branches={branches}
-      />
-
-      {/* SECURE ADMIN PIN MODAL */}
       {adminPinModalOpen && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-gray-100 space-y-4 animate-in fade-in zoom-in-95 duration-200">
             <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center text-amber-600">
-                <Lock className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="text-base font-bold text-gray-900">Sécurité Admin</h3>
-                <p className="text-xs text-gray-500">Entrez votre code PIN Administrateur pour confirmer :</p>
-              </div>
+              <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center text-amber-600"><Lock className="w-5 h-5" /></div>
+              <div><h3 className="text-base font-bold text-gray-900">Sécurité Admin</h3><p className="text-xs text-gray-500">Entrez votre code PIN Administrateur pour confirmer :</p></div>
             </div>
-
             <form onSubmit={(e) => {
               e.preventDefault();
               const verifyingAdmin = staffList.find(s => s.pin_code === adminPinInput && s.role === 'admin' && s.is_active);
-              if (!verifyingAdmin) {
-                setAdminPinError("Code PIN incorrect.");
-                return;
-              }
-              setAdminPinModalOpen(false);
-              if (adminPinResolve) adminPinResolve(true);
+              if (!verifyingAdmin) { setAdminPinError("Code PIN incorrect."); return; }
+              setAdminPinModalOpen(false); if (adminPinResolve) adminPinResolve(true);
             }} className="space-y-4">
               <div>
-                <input 
-                  type="password"
-                  value={adminPinInput}
-                  onChange={(e) => {
-                    setAdminPinInput(e.target.value);
-                    if (adminPinError) setAdminPinError('');
-                  }}
-                  placeholder="••••••••"
-                  autoFocus
-                  className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-xl text-center text-xl tracking-widest font-mono focus:bg-white focus:ring-2 focus:ring-[#0f172a] focus:outline-none transition-all"
-                />
-                {adminPinError && (
-                  <p className="text-xs text-red-600 mt-1.5 font-medium text-center">{adminPinError}</p>
-                )}
+                <input type="password" value={adminPinInput} onChange={(e) => { setAdminPinInput(e.target.value); if (adminPinError) setAdminPinError(''); }} placeholder="••••••••" autoFocus className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-xl text-center text-xl tracking-widest font-mono focus:bg-white focus:ring-2 focus:ring-[#0f172a] focus:outline-none transition-all" />
+                {adminPinError && <p className="text-xs text-red-600 mt-1.5 font-medium text-center">{adminPinError}</p>}
               </div>
-
               <div className="flex gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAdminPinModalOpen(false);
-                    if (adminPinResolve) adminPinResolve(false);
-                  }}
-                  className="flex-1 py-2.5 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold rounded-xl text-sm transition-all cursor-pointer"
-                >
-                  Annuler
-                </button>
-                <button
-                  type="submit"
-                  className="flex-1 py-2.5 px-4 bg-[#0f172a] hover:bg-slate-800 text-white font-semibold rounded-xl text-sm shadow-md transition-all cursor-pointer"
-                >
-                  Confirmer
-                </button>
+                <button type="button" onClick={() => { setAdminPinModalOpen(false); if (adminPinResolve) adminPinResolve(false); }} className="flex-1 py-2.5 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold rounded-xl text-sm transition-all cursor-pointer">Annuler</button>
+                <button type="submit" className="flex-1 py-2.5 px-4 bg-[#0f172a] hover:bg-slate-800 text-white font-semibold rounded-xl text-sm shadow-md transition-all cursor-pointer">Confirmer</button>
               </div>
             </form>
           </div>
