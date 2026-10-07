@@ -13,7 +13,7 @@ export default function ClientApp() {
   const [isLoading, setIsLoading] = useState(true);
 
   // OFFICIAL LINKS & HANDLES
-  const WHATSAPP_NUMBER = '2250759322034';
+  const WHATSAPP_NUMBER = '2250100130109';
   const FACEBOOK_URL = 'https://facebook.com/profile.php?id=61590626370497';
   const TIKTOK_URL = 'https://tiktok.com/@your-profile';
 
@@ -151,19 +151,29 @@ export default function ClientApp() {
         <div className="max-w-7xl mx-auto flex justify-between items-center">
           <div className="flex items-center space-x-2.5 cursor-pointer shrink-0 group select-none" onClick={() => setSearchTerm('')}>
             <div className="w-9 h-9 sm:w-10 sm:h-10 bg-gradient-to-br from-amber-500 via-orange-500 to-amber-600 rounded-xl flex items-center justify-center shadow-md p-1.5">
-             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
-  <defs>
-    <linearGradient id="luxury-gold" x1="0%" y1="100%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#9A7422" />
-      <stop offset="50%" stop-color="#E5C158" />
-      <stop offset="100%" stop-color="#FFF3C4" />
-    </linearGradient>
-  </defs>
-  <rect width="512" height="512" rx="120" fill="#090A0C"/>
-  <path d="M206 140 L256 90 L306 140 L346 110 L326 170 H186 L166 110 Z" fill="url(#luxury-gold)"/>
-  <circle cx="256" cy="72" r="12" fill="url(#luxury-gold)"/>
-  <path d="M186 200 H326 V240 H232 V282 H306 V320 H232 V364 H326 V404 H186 Z" fill="url(#luxury-gold)"/>
+             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+ 
+  <rect width="100" height="100" rx="28" fill="#f68b1e"/>
+  
+  
+  <path 
+    d="M30 25 C30 25, 45 15, 50 15 C55 15, 70 25, 70 25 C70 45, 60 75, 50 85 C40 75, 30 45, 30 25 Z" 
+    stroke="#FFFFFF" 
+    stroke-width="7" 
+    stroke-linecap="round" 
+    stroke-linejoin="round" 
+    fill="none"
+  />
+  <circle cx="50" cy="42" r="7" fill="#FFFFFF"/>
+  <path 
+    d="M40 60 C45 65, 55 65, 60 60" 
+    stroke="#FFFFFF" 
+    stroke-width="7" 
+    stroke-linecap="round" 
+    fill="none"
+  />
 </svg>
+
 
             </div>
             <div className="flex flex-col justify-center">
