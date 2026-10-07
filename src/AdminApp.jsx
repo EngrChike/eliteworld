@@ -165,53 +165,58 @@ export default function AdminApp({ currentUser, supabase }) {
       let rawCustomers = [];
       let historyData = [];
 
-      // 1. Fetch Customers independently
-      const { data: cData } = await supabase.from('customers').select('*').order('created_at', { ascending: false });
-      rawCustomers = cData || [];
+      // Attempt 1: Embedded relational query
+      const { data: embedData, error: embedErr } = await supabase
+        .from('customers')
+        .select('*, customer_history(*)')
+        .order('created_at', { ascending: false });
 
-      // 2. Fetch Sales History independently to capture EVERY transaction (including walk-ins with no customer_id)
-      const tablesToTry = ['customer_history', 'sales_ledger', 'sales'];
-      for (const table of tablesToTry) {
-        const { data: hData } = await supabase.from(table).select('*').order('created_at', { ascending: false });
-        if (hData && hData.length > 0) {
-          historyData = hData;
-          break; // Stop once we find the correct history table
+      if (!embedErr && embedData) {
+        rawCustomers = embedData;
+      } else {
+        // Attempt 2: Fallback to querying tables independently if relational embed failed
+        console.warn("Notice: Query embed for customer_history failed, falling back to multi-table fetch:", embedErr?.message);
+        const { data: cData } = await supabase.from('customers').select('*').order('created_at', { ascending: false });
+        rawCustomers = cData || [];
+
+        // Try candidate sales history table names
+        const { data: h1 } = await supabase.from('customer_history').select('*');
+        if (h1 && h1.length > 0) {
+          historyData = h1;
+        } else {
+          const { data: h2 } = await supabase.from('sales_ledger').select('*');
+          if (h2 && h2.length > 0) {
+            historyData = h2;
+          } else {
+            const { data: h3 } = await supabase.from('sales').select('*');
+            if (h3 && h3.length > 0) historyData = h3;
+          }
+        }
+
+        // Attach independently fetched sales history items to their respective customers
+        rawCustomers = rawCustomers.map(c => {
+          const cHist = historyData.filter(h => 
+            String(h.customer_id || h.customerId || h.client_id) === String(c.id)
+          );
+          return { ...c, customer_history: cHist };
+        });
+
+        // Collect orphan sales entries if customers list was empty
+        if (rawCustomers.length === 0 && historyData.length > 0) {
+          rawCustomers = [{
+            id: 'virtual_global_client',
+            name: 'Ventes Directes Client',
+            phone: '',
+            branch_id: null,
+            total_debt: 0,
+            customer_history: historyData
+          }];
         }
       }
 
-      // 3. Find unassigned / walk-in sales
-      const unlinkedSales = historyData.filter(h => !h.customer_id && !h.customerId && !h.client_id);
-
-      // Group unlinked sales by branch so revenue accurately attributes to the branch that made the direct sale
-      const unlinkedByBranch = {};
-      unlinkedSales.forEach(h => {
-        const bId = h.branch_id || '';
-        if (!unlinkedByBranch[bId]) unlinkedByBranch[bId] = [];
-        unlinkedByBranch[bId].push(h);
-      });
-
-      Object.keys(unlinkedByBranch).forEach(bId => {
-        rawCustomers.push({
-          id: `walk_in_virtual_client_${bId || 'hq'}`,
-          name: `Ventes Directes (${bId ? 'Succursale' : 'Siège Principal'})`,
-          phone: '-',
-          branch_id: bId || null,
-          total_debt: 0
-        });
-      });
-
       const formatted = rawCustomers.map(c => {
-        let cHist = [];
-        
-        // Attach history
-        if (String(c.id).startsWith('walk_in_virtual_client_')) {
-          const bId = c.branch_id || '';
-          cHist = unlinkedByBranch[bId] || [];
-        } else {
-          cHist = historyData.filter(h => String(h.customer_id || h.customerId || h.client_id) === String(c.id));
-        }
-
-        const formattedHistory = cHist.map(h => {
+        const rawHistory = c.customer_history || c.history || c.sales || [];
+        const formattedHistory = rawHistory.map(h => {
           let parsedItems = [];
           if (h.items) {
             if (typeof h.items === 'string') {
@@ -227,13 +232,10 @@ export default function AdminApp({ currentUser, supabase }) {
             return acc + (pr * qt);
           }, 0);
 
-          let dbTotal = parseFloat(h.total_amount ?? h.total ?? h.amount ?? h.grand_total);
-          const totalAmt = !isNaN(dbTotal) ? dbTotal : itemSum;
-
-          let dbPaid = parseFloat(h.amount_paid ?? h.paid ?? h.paid_amount);
-          const paidAmt = !isNaN(dbPaid) ? dbPaid : totalAmt;
-
+          const totalAmt = parseFloat(h.total_amount ?? h.total ?? h.amount ?? h.grand_total ?? itemSum) || itemSum;
+          const paidAmt = parseFloat(h.amount_paid ?? h.paid ?? h.paid_amount ?? 0) || 0;
           let debtAmt = parseFloat(h.debt ?? h.balance ?? h.amount_due ?? 0) || 0;
+
           if (debtAmt === 0 && totalAmt > paidAmt && paidAmt > 0) {
             debtAmt = totalAmt - paidAmt;
           }
@@ -248,7 +250,7 @@ export default function AdminApp({ currentUser, supabase }) {
             items: parsedItems,
             productId: h.product_id || h.productId
           };
-        }).sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+        }).sort((a, b) => b.id - a.id);
 
         const directDebt = parseFloat(c.total_debt ?? c.totalDebt ?? c.debt ?? c.balance ?? 0) || 0;
         const historyDebtSum = formattedHistory.reduce((acc, h) => acc + (parseFloat(h.debt) || 0), 0);
@@ -558,6 +560,7 @@ export default function AdminApp({ currentUser, supabase }) {
         return;
       }
 
+      // Pre-validation before executing database calls
       for (const item of activeItems) {
         const transferQty = Number(item.qty) || 0;
         if (!item.targetBranch) {
@@ -578,6 +581,7 @@ export default function AdminApp({ currentUser, supabase }) {
         const { product, targetBranch, qty } = item;
         const transferQty = Number(qty) || 0;
 
+        // 1. Deduct from HQ Main Stock
         const newHqQty = product.quantity - transferQty;
         const { error: hqError } = await supabase
           .from('products')
@@ -586,6 +590,7 @@ export default function AdminApp({ currentUser, supabase }) {
 
         if (hqError) throw hqError;
 
+        // 2. Increment or Insert into Target Branch Stock
         const existingTargetProd = products.find(p => 
           p.name.trim().toLowerCase() === product.name.trim().toLowerCase() && 
           String(p.batch_reference || '').trim().toUpperCase() === String(product.batch_reference || '').trim().toUpperCase() && 
@@ -624,6 +629,7 @@ export default function AdminApp({ currentUser, supabase }) {
         });
       }
 
+      // Create log record
       const newLogRecord = {
         transfer_ref: transferRef,
         items: transferSummary,
@@ -631,8 +637,10 @@ export default function AdminApp({ currentUser, supabase }) {
         created_at: new Date().toISOString()
       };
 
+      // 3. Optimistically update local React state for immediate receipt availability
       setTransferLogs(prev => [newLogRecord, ...prev]);
 
+      // 4. Persist transfer receipt into DB
       try {
         const { data: insertedData, error: logErr } = await supabase
           .from('stock_transfers')
@@ -651,6 +659,7 @@ export default function AdminApp({ currentUser, supabase }) {
       setBatchTransferLoading(false);
       setBatchTransferOpen(false);
       
+      // Refresh backend state
       await fetchProducts();
       await fetchTransferLogs();
 
@@ -687,23 +696,27 @@ export default function AdminApp({ currentUser, supabase }) {
 
   // ---- CONTEXT FILTERING & LOW-STOCK DETECTOR ----
   const contextProducts = products.filter(p => {
-    if (activeBranchId === 'ALL') return true;
-    return String(p.branch_id || '') === String(activeBranchId || '');
+    if (activeBranchId === 'ALL' || activeBranchId === '') return true;
+    return String(p.branch_id || '') === String(activeBranchId);
   });
 
   const contextCustomers = customers.filter(c => {
-    if (activeBranchId === 'ALL') return true;
-    return String(c.branch_id || '') === String(activeBranchId || '');
+    if (activeBranchId === 'ALL' || activeBranchId === '') return true;
+    return String(c.branch_id || '') === String(activeBranchId);
   });
 
+  // Shortage / Low Stock Detector (Products with stock <= 3)
   const lowStockProducts = contextProducts.filter(p => !p.is_archived && (parseInt(p.quantity) || 0) <= 3);
   const hasLowStock = lowStockProducts.length > 0;
 
   // ---- ACCURATE FINANCIAL CALCULATIONS ----
+
+  // 1. Total Sales Revenue
   const totalSalesRevenue = contextCustomers.reduce((acc, c) => {
     const customerSales = (c.history || []).reduce((hAcc, h) => {
       let rev = parseFloat(h.total ?? h.total_amount ?? h.amount ?? h.grand_total ?? h.total_price ?? 0) || 0;
       
+      // Fallback: If root transaction total is 0, sum item price * qty
       if (rev === 0 && Array.isArray(h.items) && h.items.length > 0) {
         rev = h.items.reduce((iAcc, it) => {
           const itemPrice = parseFloat(it.price ?? it.unit_price ?? it.total ?? 0) || 0;
@@ -716,6 +729,7 @@ export default function AdminApp({ currentUser, supabase }) {
     return acc + customerSales;
   }, 0);
 
+  // 2. Cost of Goods Sold (COGS)
   const totalGoodsSoldCost = contextCustomers.reduce((acc, c) => {
     const customerCOGS = (c.history || []).reduce((hAcc, h) => {
       const items = Array.isArray(h.items) ? h.items : [];
@@ -744,6 +758,7 @@ export default function AdminApp({ currentUser, supabase }) {
     return acc + customerCOGS;
   }, 0);
 
+  // 3. Total Outstanding Debts
   const totalOutstandingDebt = contextCustomers.reduce((acc, c) => {
     const directDebt = parseFloat(c.totalDebt ?? c.total_debt ?? c.debt ?? c.balance ?? c.outstanding_debt ?? 0) || 0;
     
@@ -879,292 +894,337 @@ export default function AdminApp({ currentUser, supabase }) {
               </span>
               <button
                 onClick={handleToggleFinancialVisibility}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold text-gray-600 bg-gray-200 hover:bg-gray-300 transition-colors"
+                className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg bg-white hover:bg-gray-100 text-gray-700 transition-all border border-gray-200 shadow-sm cursor-pointer"
               >
-                {showFinancials ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                {showFinancials ? "Masquer les données" : "Afficher (10 min)"}
+                {showFinancials ? (
+                  <>
+                    <EyeOff className="w-4 h-4 text-red-500" />
+                    <span>Masquer les chiffres</span>
+                  </>
+                ) : (
+                  <>
+                    <Eye className="w-4 h-4 text-emerald-600" />
+                    <span>Afficher les chiffres (PIN requis)</span>
+                  </>
+                )}
               </button>
             </div>
-            
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-              <div className="bg-white p-5 rounded-xl border-l-4 border-[#0f172a] shadow-sm flex flex-col justify-center transition-all hover:shadow-md">
-                <p className="text-xs text-gray-500 font-semibold uppercase tracking-wider mb-1">Chiffre d'Affaires Brut</p>
-                <p className="text-2xl font-bold text-gray-800 tracking-tight">{formatMoney(totalSalesRevenue)}</p>
-                {showFinancials && <p className="text-[10px] text-gray-400 mt-1">Total des ventes enregistrées</p>}
-              </div>
 
-              <div className="bg-white p-5 rounded-xl border-l-4 border-amber-500 shadow-sm flex flex-col justify-center transition-all hover:shadow-md">
-                <p className="text-xs text-gray-500 font-semibold uppercase tracking-wider mb-1">Coût des Marchandises (COGS)</p>
-                <p className="text-2xl font-bold text-amber-600 tracking-tight">{formatMoney(totalGoodsSoldCost)}</p>
-                {showFinancials && <p className="text-[10px] text-gray-400 mt-1">Coût d'achat du stock vendu</p>}
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+              <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+                <p className="text-[11px] font-semibold tracking-wider uppercase text-gray-500">Total Asset Cost</p>
+                <p className="text-lg font-bold text-gray-900 mt-2">{formatMoney(totalInventoryCost)}</p>
               </div>
-
-              <div className="bg-white p-5 rounded-xl border-l-4 border-emerald-500 shadow-sm flex flex-col justify-center transition-all hover:shadow-md">
-                <p className="text-xs text-gray-500 font-semibold uppercase tracking-wider mb-1">Marge Brute Réalisée</p>
-                <p className="text-2xl font-bold text-emerald-600 tracking-tight">{formatMoney(totalSalesRevenue - totalGoodsSoldCost)}</p>
-                {showFinancials && <p className="text-[10px] text-gray-400 mt-1">Bénéfice estimé sur ventes</p>}
+              <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+                <p className="text-[11px] font-semibold tracking-wider uppercase text-gray-500">Expected Revenue</p>
+                <p className="text-lg font-bold text-indigo-700 mt-2">{formatMoney(totalExpectedRevenue)}</p>
               </div>
-
-              <div className="bg-white p-5 rounded-xl border-l-4 border-blue-500 shadow-sm flex flex-col justify-center transition-all hover:shadow-md">
-                <p className="text-xs text-gray-500 font-semibold uppercase tracking-wider mb-1">Dettes Clients Actuelles</p>
-                <p className="text-2xl font-bold text-blue-600 tracking-tight">{formatMoney(totalOutstandingDebt)}</p>
-                {showFinancials && <p className="text-[10px] text-gray-400 mt-1">Total impayés à recouvrer</p>}
+              <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+                <p className="text-[11px] font-semibold tracking-wider uppercase text-gray-500">Current Stock Value</p>
+                <p className="text-lg font-bold text-emerald-600 mt-2">{formatMoney(totalPotentialRetail)}</p>
               </div>
-
-              <div className="bg-white p-5 rounded-xl border-l-4 border-purple-500 shadow-sm flex flex-col justify-center transition-all hover:shadow-md">
-                <p className="text-xs text-gray-500 font-semibold uppercase tracking-wider mb-1">Valeur Stock Potentielle</p>
-                <p className="text-2xl font-bold text-purple-600 tracking-tight">{formatMoney(totalPotentialRetail)}</p>
-                {showFinancials && <p className="text-[10px] text-gray-400 mt-1">Si tout le stock actuel est vendu</p>}
+              <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+                <p className="text-[11px] font-semibold tracking-wider uppercase text-gray-500">Cost of Goods Sold</p>
+                <p className="text-lg font-bold text-purple-700 mt-2">{formatMoney(totalGoodsSoldCost)}</p>
+              </div>
+              <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+                <p className="text-[11px] font-semibold tracking-wider uppercase text-gray-500">Total Sales (Rev)</p>
+                <p className="text-lg font-bold text-blue-700 mt-2">{formatMoney(totalSalesRevenue)}</p>
+              </div>
+              <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow border-t-4 border-t-red-500">
+                <p className="text-[11px] font-semibold tracking-wider uppercase text-gray-500">Outstanding Debts</p>
+                <p className="text-lg font-bold text-red-600 mt-2">{formatMoney(totalOutstandingDebt)}</p>
               </div>
             </div>
           </div>
         )}
 
-        {/* TAB CONTENT RENDERING */}
-        {activeTab === 'inventory' && (
-          <InventoryManagement
-            isAdmin={isAdmin}
-            products={contextProducts}
-            filteredProducts={filteredProducts}
-            uniqueBatches={uniqueBatches}
-            selectedBatchFilter={selectedBatchFilter}
-            setSelectedBatchFilter={setSelectedBatchFilter}
-            showArchived={showArchived}
-            setShowArchived={setShowArchived}
-            handleStartEditProduct={handleStartEditProduct}
-            handleArchiveProduct={handleArchiveProduct}
-            handleUpdateStockVolume={handleUpdateStockVolume}
-            formatMoney={formatMoney}
-            editingProduct={editingProduct}
-            handleCancelEditProduct={handleCancelEditProduct}
-            handleSaveProduct={handleSaveProduct}
-            name={name} setName={setName}
-            price={price} setPrice={setPrice}
-            costPrice={costPrice} setCostPrice={setCostPrice}
-            quantity={quantity} setQuantity={setQuantity}
-            initialQuantity={initialQuantity} setInitialQuantity={setInitialQuantity}
-            description={description} setDescription={setDescription}
-            batch={batch} setBatch={setBatch}
-            productBranch={productBranch} setProductBranch={setProductBranch}
-            setImageFile={setImageFile}
-            uploading={uploading}
-            branches={branches}
-            handleOpenBatchTransfer={handleOpenBatchTransfer}
-            handleOpenTransferHistory={handleOpenTransferHistory}
-          />
-        )}
-
-        {activeTab === 'customers' && (
-          <SalesLedger 
-            products={contextProducts} 
-            customers={contextCustomers} 
-            setCustomers={setCustomers} 
-            supabase={supabase} 
-            activeBranchId={activeBranchId} 
-          />
-        )}
-
-        {activeTab === 'storefront' && isAdmin && (
-          <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
-            <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-6 gap-4">
-              <div>
-                <h3 className="text-lg font-extrabold text-gray-800 flex items-center gap-2">
-                  <Globe className="w-5 h-5 text-blue-600" />
-                  Gestionnaire de Vitrine Client
-                </h3>
-                <p className="text-sm text-gray-500 mt-1">
-                  Définissez quelle succursale est visible par vos clients via l'application vitrine en direct.
-                </p>
-              </div>
-
-              <div className="flex flex-col items-end gap-2 bg-blue-50 p-3 rounded-lg border border-blue-100">
-                <span className="text-xs font-semibold text-blue-800 uppercase tracking-wider">État actuel (En ligne)</span>
-                <span className="text-sm font-bold text-blue-900 bg-white px-3 py-1 rounded-md shadow-sm">
-                  {liveStoreBranch === '' ? 'Siège Principal (HQ)' : branches.find(b => b.id === liveStoreBranch)?.name || 'Inconnu'}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex flex-col md:flex-row gap-6">
-              <div className="flex-1 bg-gray-50 p-5 rounded-xl border border-gray-200">
-                <h4 className="text-sm font-bold text-gray-700 mb-4 flex items-center gap-2">
-                  <Eye className="w-4 h-4 text-gray-500" /> 1. Prévisualisation locale
-                </h4>
-                <div className="mb-4">
-                  <label className="block text-xs font-semibold text-gray-600 uppercase mb-2">Choisir une succursale à prévisualiser</label>
-                  <select
-                    value={storefrontBranch}
-                    onChange={(e) => setStorefrontBranch(e.target.value)}
-                    className="w-full p-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                  >
-                    <option value="">Siège Principal (HQ) - {products.filter(p => (!p.branch_id || p.branch_id === '') && !p.is_archived && p.quantity > 0).length} articles</option>
-                    {branches.map(b => (
-                      <option key={b.id} value={b.id}>
-                        {b.name} - {products.filter(p => p.branch_id === b.id && !p.is_archived && p.quantity > 0).length} articles
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex-1 bg-green-50 p-5 rounded-xl border border-green-200 flex flex-col justify-between">
-                <div>
-                  <h4 className="text-sm font-bold text-green-800 mb-2 flex items-center gap-2">
-                    <Globe className="w-4 h-4 text-green-600" /> 2. Mise à jour de l'Application Client
-                  </h4>
-                  <p className="text-xs text-green-700 mb-4">
-                    Appliquez la succursale sélectionnée ci-contre à l'application vitrine publique. Tous les clients verront instantanément ce stock.
-                  </p>
-                </div>
-                <button
-                  onClick={() => handleUpdateLiveBranch(storefrontBranch)}
-                  className="w-full py-3 bg-green-600 hover:bg-green-700 text-white text-sm font-bold rounded-lg shadow-md transition-colors flex justify-center items-center gap-2"
-                >
-                  <Globe className="w-4 h-4" />
-                  Appliquer à la Vitrine Publique
-                </button>
-              </div>
-            </div>
-
-            <div className="mt-8 border-t border-gray-100 pt-6">
-              <h4 className="text-sm font-bold text-gray-800 mb-4">Aperçu du stock : {storefrontBranch === '' ? 'Siège Principal (HQ)' : branches.find(b => b.id === storefrontBranch)?.name}</h4>
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-                {storefrontFilteredProducts.length > 0 ? (
-                  storefrontFilteredProducts.map((p) => (
-                    <div key={p.id} className="bg-white rounded-lg overflow-hidden shadow-sm border border-gray-100 group">
-                      <div className="relative">
-                        <img src={p.image_url} alt={p.name} className="w-full h-24 object-cover group-hover:scale-105 transition-transform duration-300" />
-                        <div className="absolute top-0 right-0 bg-black/60 text-white text-[10px] font-bold px-2 py-1 m-1 rounded backdrop-blur-sm">
-                          Stock: {p.quantity}
-                        </div>
-                      </div>
-                      <div className="p-3">
-                        <h4 className="font-bold text-gray-800 text-xs truncate" title={p.name}>{p.name}</h4>
-                        <p className="text-blue-600 font-extrabold text-sm mt-1">{p.price.toLocaleString()} FCFA</p>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="col-span-full py-8 text-center text-gray-400 text-sm bg-gray-50 rounded-lg border border-dashed border-gray-200">
-                    Aucun produit disponible dans cette succursale pour le moment.
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'branches' && isAdmin && (
-          <BranchManagement
+        {/* TAB 1: BRANCHES & HQ MANAGEMENT */}
+        {isAdmin && activeTab === 'branches' && (
+          <BranchManagement 
             branches={branches}
             branchName={branchName}
             setBranchName={setBranchName}
             branchLocation={branchLocation}
             setBranchLocation={setBranchLocation}
-            handleSaveBranch={handleSaveBranch}
             editingBranch={editingBranch}
             setEditingBranch={setEditingBranch}
-            handleDeleteBranch={handleDeleteBranch}
-            products={products}
-            staffList={staffList}
+            handleSaveBranch={handleSaveBranch}
+            handleDeleteBranch={handleDeleteBranch} 
+            staffList={staffList}                   
+            handleReassignStaff={handleReassignStaff} 
           />
         )}
 
-        {activeTab === 'staff' && isAdmin && (
-          <StaffManagement
-            staffList={staffList}
+        {/* TAB 2: INVENTORY MANAGEMENT */}
+        {isAdmin && activeTab === 'inventory' && (
+          <InventoryManagement 
             branches={branches}
-            staffName={staffName} setStaffName={setStaffName}
-            staffPin={staffPin} setStaffPin={setStaffPin}
-            staffRole={staffRole} setStaffRole={setStaffRole}
-            staffBranch={staffBranch} setStaffBranch={setStaffBranch}
-            editingStaff={editingStaff}
-            handleSaveStaff={handleSaveStaff}
-            handleStartEditStaff={handleStartEditStaff}
-            handleToggleStaffStatus={handleToggleStaffStatus}
-            handleReassignStaff={handleReassignStaff}
-            setEditingStaff={setEditingStaff}
+            productBranch={productBranch}
+            setProductBranch={setProductBranch}
+            name={name}
+            setName={setName}
+            description={description}           
+            setDescription={setDescription}     
+            batch={batch}
+            setBatch={setBatch}
+            costPrice={costPrice}
+            setCostPrice={setCostPrice}
+            price={price}
+            setPrice={setPrice}
+            initialQuantity={initialQuantity}
+            setInitialQuantity={setInitialQuantity}
+            quantity={quantity}
+            setQuantity={setQuantity}
+            setImageFile={setImageFile}
+            handleSaveProduct={handleSaveProduct}
+            uploading={uploading}
+            editingProduct={editingProduct}
+            handleCancelEditProduct={handleCancelEditProduct}
+            handleOpenBatchTransfer={handleOpenBatchTransfer}
+            handleOpenTransferHistory={handleOpenTransferHistory}
+            showArchived={showArchived}
+            setShowArchived={setShowArchived}
+            selectedBatchFilter={selectedBatchFilter}
+            setSelectedBatchFilter={setSelectedBatchFilter}
+            uniqueBatches={uniqueBatches}
+            filteredProducts={filteredProducts}
+            handleUpdateStockVolume={handleUpdateStockVolume}
+            handleStartEditProduct={handleStartEditProduct}
+            handleArchiveProduct={handleArchiveProduct}
           />
         )}
 
+        {/* TAB 3: SALES LEDGER */}
+        {activeTab === 'customers' && (
+          <SalesLedger 
+            products={contextProducts}
+            customers={contextCustomers}
+            fetchProducts={fetchProducts}
+            fetchCustomers={fetchCustomersFromSupabase}
+            supabase={supabase}
+            currentUser={currentUser}
+            activeBranchId={activeBranchId} 
+          />
+        )}
+
+        {/* TAB 4: STOREFRONT PREVIEW & GLOBAL STORE CONTROL */}
+        {isAdmin && activeTab === 'storefront' && (
+          <div className="space-y-6">
+            
+            {/* LIVE STORE CONFIGURATION CARD */}
+            <div className="bg-white p-5 sm:p-6 rounded-xl border-2 border-emerald-500/20 shadow-sm bg-gradient-to-r from-emerald-50/50 to-white">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-black text-emerald-900 flex items-center gap-2">
+                    <Globe className="w-5 h-5 text-emerald-600" />
+                    Configuration de la Boutique Publique
+                  </h3>
+                  <p className="text-sm text-gray-600 mt-1">
+                    Sélectionnez la succursale dont le stock sera <span className="font-semibold text-emerald-700">actuellement visible</span> par vos clients sur le lien public. (PIN Admin requis)
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 bg-white p-2.5 rounded-lg border border-gray-200 shadow-sm min-w-[220px]">
+                   <div className="flex flex-col w-full">
+                     <span className="text-[10px] uppercase font-bold text-gray-400">Succursale Active en Ligne</span>
+                     <select 
+                       value={liveStoreBranch}
+                       onChange={(e) => handleUpdateLiveBranch(e.target.value)}
+                       className="text-sm font-bold text-gray-900 bg-transparent outline-none cursor-pointer w-full mt-0.5"
+                     >
+                       <option value="">Siège Principal (HQ)</option>
+                       {branches.map(b => (
+                         <option key={b.id} value={b.id}>{b.name}</option>
+                       ))}
+                     </select>
+                   </div>
+                </div>
+              </div>
+            </div>
+
+            {/* STOREFRONT PREVIEW CATALOGUE */}
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 space-y-6">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-gray-100 pb-4">
+                <div>
+                  <h3 className="text-base font-black text-gray-900 flex items-center gap-2">
+                    <Eye className="w-5 h-5 text-indigo-600" />
+                    Aperçu du Catalogue de la Vitrine Publique
+                  </h3>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Visualisez les articles actuellement affichés aux clients pour la succursale sélectionnée.
+                  </p>
+                </div>
+                
+                <div className="flex items-center gap-3 w-full sm:w-auto">
+                  <select 
+                    value={storefrontBranch}
+                    onChange={(e) => setStorefrontBranch(e.target.value)}
+                    className="px-3 py-2 bg-gray-50 border border-gray-300 rounded-lg text-sm font-semibold text-gray-800 outline-none cursor-pointer w-full sm:w-auto"
+                  >
+                    <option value="">Aperçu : Siège Principal (HQ)</option>
+                    {branches.map(b => (
+                      <option key={b.id} value={b.id}>Aperçu : {b.name}</option>
+                    ))}
+                  </select>
+
+                  <button
+                    onClick={() => {
+                      const url = window.location.origin;
+                      navigator.clipboard.writeText(url);
+                      alert("Lien de la boutique copié dans le presse-papier !");
+                    }}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-lg shadow-sm transition-all whitespace-nowrap cursor-pointer"
+                  >
+                    Copier le lien
+                  </button>
+                </div>
+              </div>
+
+              {/* PRODUCTS GRID */}
+              {storefrontFilteredProducts.length === 0 ? (
+                <div className="text-center py-12 bg-gray-50 rounded-xl border border-dashed border-gray-200">
+                  <Package className="w-10 h-10 text-gray-400 mx-auto mb-3" />
+                  <p className="text-sm font-bold text-gray-700">Aucun produit disponible dans cette succursale</p>
+                  <p className="text-xs text-gray-500 mt-1">Ajoutez du stock ou transférez des articles vers cette succursale pour les afficher.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                  {storefrontFilteredProducts.map(product => (
+                    <div key={product.id} className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm hover:shadow-md transition-all flex flex-col">
+                      <div className="h-48 bg-gray-100 relative overflow-hidden">
+                        <img 
+                          src={product.image_url || 'https://images.unsplash.com/photo-1522337660859-02fbefca4702?auto=format&fit=crop&w=800&q=80'} 
+                          alt={product.name}
+                          className="w-full h-full object-cover"
+                        />
+                        <span className="absolute top-2 right-2 bg-black/65 backdrop-blur-md text-white text-[10px] font-bold px-2.5 py-1 rounded-full">
+                          Stock : {product.quantity}
+                        </span>
+                      </div>
+                      <div className="p-4 flex flex-col flex-1 justify-between space-y-3">
+                        <div>
+                          <h4 className="text-sm font-bold text-gray-900 line-clamp-1">{product.name}</h4>
+                          <p className="text-xs text-gray-500 line-clamp-2 mt-1">{product.description || 'Aucune description fournie.'}</p>
+                        </div>
+                        <div className="flex items-center justify-between pt-3 border-t border-gray-100">
+                          <span className="text-xs text-gray-400 uppercase font-mono">Ref: {product.batch_reference || 'N/A'}</span>
+                          <span className="text-sm font-extrabold text-emerald-600">{(product.price || 0).toLocaleString()} FCFA</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 5: STAFF MANAGEMENT */}
+        {isAdmin && activeTab === 'staff' && (
+          <StaffManagement 
+            supabase={supabase}
+            branches={branches}
+            staffList={staffList}
+            fetchStaffFromSupabase={fetchStaffFromSupabase}
+            verifyAdminPinBeforeAction={verifyAdminPinBeforeAction}
+            staffName={staffName}
+            setStaffName={setStaffName}
+            staffPin={staffPin}
+            setStaffPin={setStaffPin}
+            staffRole={staffRole}
+            setStaffRole={setStaffRole}
+            staffBranch={staffBranch}
+            setStaffBranch={setStaffBranch}
+            editingStaff={editingStaff}
+            setEditingStaff={setEditingStaff}
+            handleSaveStaff={handleSaveStaff}
+            handleToggleStaffStatus={handleToggleStaffStatus}
+            handleStartEditStaff={handleStartEditStaff}
+          />
+        )}
       </div>
 
-      {/* --- BATCH TRANSFER MODAL --- */}
-      {batchTransferOpen && (
-        <BatchTransferModal
-          batchTransferStep={batchTransferStep}
-          setBatchTransferStep={setBatchTransferStep}
-          setBatchTransferOpen={setBatchTransferOpen}
-          batchTransferError={batchTransferError}
-          setBatchTransferError={setBatchTransferError}
-          hqProductsForTransfer={hqProductsForTransfer}
-          selectedBatchItems={selectedBatchItems}
-          handleToggleBatchItemSelect={handleToggleBatchItemSelect}
-          handleUpdateBatchItemDetail={handleUpdateBatchItemDetail}
-          handleProceedToBatchReview={handleProceedToBatchReview}
-          branches={branches}
-          activeSelectedArray={activeSelectedArray}
-          handleConfirmBatchTransfer={handleConfirmBatchTransfer}
-          batchTransferLoading={batchTransferLoading}
-        />
-      )}
+      {/* MULTI-PRODUCT BATCH TRANSFER MODAL */}
+      <BatchTransferModal 
+        batchTransferOpen={batchTransferOpen}
+        setBatchTransferOpen={setBatchTransferOpen}
+        batchTransferStep={batchTransferStep}
+        setBatchTransferStep={setBatchTransferStep}
+        batchTransferError={batchTransferError}
+        hqProductsForTransfer={hqProductsForTransfer}
+        selectedBatchItems={selectedBatchItems}
+        handleToggleBatchItemSelect={handleToggleBatchItemSelect}
+        handleUpdateBatchItemDetail={handleUpdateBatchItemDetail}
+        branches={branches}
+        activeSelectedArray={activeSelectedArray}
+        handleProceedToBatchReview={handleProceedToBatchReview}
+        handleConfirmBatchTransfer={handleConfirmBatchTransfer}
+        batchTransferLoading={batchTransferLoading}
+      />
 
-      {/* --- TRANSFER HISTORY MODAL --- */}
-      {transferHistoryOpen && (
-        <TransferHistoryModal
-          setTransferHistoryOpen={setTransferHistoryOpen}
-          transferLogs={transferLogs}
-        />
-      )}
+      {/* TRANSFER HISTORY & RECEIPTS MODAL */}
+      <TransferHistoryModal 
+        isOpen={transferHistoryOpen}
+        onClose={() => setTransferHistoryOpen(false)}
+        transferLogs={transferLogs}
+        branches={branches}
+      />
 
-      {/* --- ADMIN SECURE PIN MODAL --- */}
+      {/* SECURE ADMIN PIN MODAL */}
       {adminPinModalOpen && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl w-full max-w-sm p-6 shadow-2xl transform transition-all">
-            <div className="flex flex-col items-center mb-6">
-              <div className="bg-red-50 p-3 rounded-full mb-3">
-                <Lock className="w-8 h-8 text-red-500" />
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-gray-100 space-y-4 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center space-x-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center text-amber-600">
+                <Lock className="w-5 h-5" />
               </div>
-              <h3 className="text-xl font-black text-gray-800">Action Sécurisée</h3>
-              <p className="text-sm text-gray-500 text-center mt-2">Veuillez entrer votre PIN administrateur pour confirmer cette action.</p>
+              <div>
+                <h3 className="text-base font-bold text-gray-900">Sécurité Admin</h3>
+                <p className="text-xs text-gray-500">Entrez votre code PIN Administrateur pour confirmer :</p>
+              </div>
             </div>
 
             <form onSubmit={(e) => {
               e.preventDefault();
-              if (adminPinInput === currentUser.pin_code) {
-                setAdminPinModalOpen(false);
-                if (adminPinResolve) adminPinResolve(true);
-              } else {
-                setAdminPinError('PIN incorrect. Accès refusé.');
+              const verifyingAdmin = staffList.find(s => s.pin_code === adminPinInput && s.role === 'admin' && s.is_active);
+              if (!verifyingAdmin) {
+                setAdminPinError("Code PIN incorrect.");
+                return;
               }
-            }}>
-              <div className="mb-6">
-                <input
+              setAdminPinModalOpen(false);
+              if (adminPinResolve) adminPinResolve(true);
+            }} className="space-y-4">
+              <div>
+                <input 
                   type="password"
                   value={adminPinInput}
-                  onChange={(e) => setAdminPinInput(e.target.value)}
-                  className={`w-full text-center text-2xl tracking-[0.5em] font-bold p-4 border-2 rounded-xl outline-none transition-all ${adminPinError ? 'border-red-400 bg-red-50' : 'border-gray-200 focus:border-[#0f172a] focus:ring-4 focus:ring-slate-100'}`}
-                  placeholder="••••••"
-                  maxLength={6}
+                  onChange={(e) => {
+                    setAdminPinInput(e.target.value);
+                    if (adminPinError) setAdminPinError('');
+                  }}
+                  placeholder="••••••••"
                   autoFocus
+                  className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-xl text-center text-xl tracking-widest font-mono focus:bg-white focus:ring-2 focus:ring-[#0f172a] focus:outline-none transition-all"
                 />
-                {adminPinError && <p className="text-red-500 text-xs font-bold mt-2 text-center">{adminPinError}</p>}
+                {adminPinError && (
+                  <p className="text-xs text-red-600 mt-1.5 font-medium text-center">{adminPinError}</p>
+                )}
               </div>
 
-              <div className="flex gap-3">
+              <div className="flex gap-3 pt-2">
                 <button
                   type="button"
                   onClick={() => {
                     setAdminPinModalOpen(false);
                     if (adminPinResolve) adminPinResolve(false);
                   }}
-                  className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-bold rounded-xl transition-colors"
+                  className="flex-1 py-2.5 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold rounded-xl text-sm transition-all cursor-pointer"
                 >
                   Annuler
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-3 bg-[#0f172a] hover:bg-slate-800 text-white text-sm font-bold rounded-xl shadow-lg shadow-slate-200 transition-all"
+                  className="flex-1 py-2.5 px-4 bg-[#0f172a] hover:bg-slate-800 text-white font-semibold rounded-xl text-sm shadow-md transition-all cursor-pointer"
                 >
                   Confirmer
                 </button>
