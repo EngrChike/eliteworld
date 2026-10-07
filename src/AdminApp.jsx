@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Package, Users, Eye, EyeOff, UserCog, Store, Filter, Lock, Globe, ReceiptText } from 'lucide-react';
+import { Package, Users, Eye, EyeOff, UserCog, Store, Filter, Lock, Globe, ReceiptText, AlertTriangle } from 'lucide-react';
 import SalesLedger from './SalesLedger';
 import InventoryManagement from './components/InventoryManagement';
 import BranchManagement from './components/BranchManagement';
@@ -29,10 +29,11 @@ export default function AdminApp({ currentUser, supabase }) {
   const [adminPinResolve, setAdminPinResolve] = useState(null);
   const [adminPinError, setAdminPinError] = useState('');
 
-  // Branch Context Filters
+  // Branch Context Filters & Low Stock Filter State
   const [viewingBranch, setViewingBranch] = useState(''); 
   const [selectedBatchFilter, setSelectedBatchFilter] = useState('ALL');
   const [showArchived, setShowArchived] = useState(false);
+  const [showLowStockOnly, setShowLowStockOnly] = useState(false);
 
   // Storefront Specific Branch Filter State
   const [storefrontBranch, setStorefrontBranch] = useState(() => {
@@ -619,7 +620,7 @@ export default function AdminApp({ currentUser, supabase }) {
     setProducts(prev => prev.map(p => String(p.id) === String(id) ? { ...p, is_archived: archiveState } : p));
   };
 
-  // ---- CONTEXT FILTERING & FINANCIAL CALCULATION ----
+  // ---- CONTEXT FILTERING & LOW-STOCK DETECTOR ----
   const contextProducts = products.filter(p => {
     if (activeBranchId === 'ALL' || activeBranchId === '') return true;
     return String(p.branch_id || '') === String(activeBranchId);
@@ -629,6 +630,82 @@ export default function AdminApp({ currentUser, supabase }) {
     if (activeBranchId === 'ALL' || activeBranchId === '') return true;
     return String(c.branch_id || '') === String(activeBranchId);
   });
+
+  // Shortage / Low Stock Detector (Products with stock <= 3)
+  const lowStockProducts = contextProducts.filter(p => !p.is_archived && (parseInt(p.quantity) || 0) <= 3);
+  const hasLowStock = lowStockProducts.length > 0;
+
+  // ---- ACCURATE FINANCIAL CALCULATIONS ----
+
+  // 1. Total Sales Revenue (Calculated cleanly across transaction history records and itemized fallback)
+  const totalSalesRevenue = contextCustomers.reduce((acc, c) => {
+    const customerSales = (c.history || []).reduce((hAcc, h) => {
+      let rev = parseFloat(h.total ?? h.total_amount ?? h.amount ?? h.grand_total ?? h.total_price ?? 0) || 0;
+      
+      // Fallback: If root transaction total is 0, sum item price * qty
+      if (rev === 0 && Array.isArray(h.items) && h.items.length > 0) {
+        rev = h.items.reduce((iAcc, it) => {
+          const itemPrice = parseFloat(it.price ?? it.unit_price ?? it.total ?? 0) || 0;
+          const itemQty = parseInt(it.qty ?? it.quantity ?? 1) || 1;
+          return iAcc + (itemPrice * itemQty);
+        }, 0);
+      }
+      return hAcc + rev;
+    }, 0);
+    return acc + customerSales;
+  }, 0);
+
+  // 2. Cost of Goods Sold (COGS) - Matches products by ID or Name across transaction history
+  const totalGoodsSoldCost = contextCustomers.reduce((acc, c) => {
+    const customerCOGS = (c.history || []).reduce((hAcc, h) => {
+      const items = Array.isArray(h.items) ? h.items : [];
+      if (items.length > 0) {
+        const hCogs = items.reduce((iAcc, it) => {
+          const matchedProd = products.find(p => 
+            String(p.id) === String(it.productId || it.product_id || it.id) ||
+            p.name.trim().toLowerCase() === (it.name || it.product_name || '').trim().toLowerCase()
+          );
+
+          const unitCost = parseFloat(it.cost_price ?? it.costPrice ?? matchedProd?.cost_price ?? matchedProd?.costPrice ?? 0) || 0;
+          const qty = parseInt(it.qty ?? it.quantity ?? 1) || 1;
+          return iAcc + (unitCost * qty);
+        }, 0);
+        return hAcc + hCogs;
+      } else {
+        const matchedProd = products.find(p => 
+          String(p.id) === String(h.productId || h.product_id) ||
+          p.name.trim().toLowerCase() === (h.product_name || h.name || '').trim().toLowerCase()
+        );
+        const unitCost = parseFloat(h.cost_price ?? h.costPrice ?? matchedProd?.cost_price ?? 0) || 0;
+        const qty = parseInt(h.qty ?? h.quantity ?? 1) || 1;
+        return hAcc + (unitCost * qty);
+      }
+    }, 0);
+    return acc + customerCOGS;
+  }, 0);
+
+  // 3. Total Outstanding Debts - Calculates from customer profile or unpaid transaction history
+  const totalOutstandingDebt = contextCustomers.reduce((acc, c) => {
+    const directDebt = parseFloat(c.totalDebt ?? c.total_debt ?? c.debt ?? c.balance ?? c.outstanding_debt ?? 0) || 0;
+    
+    const historyDebt = (c.history || []).reduce((hAcc, h) => {
+      let recordDebt = parseFloat(h.debt ?? h.balance ?? h.amount_due ?? 0) || 0;
+      
+      if (recordDebt === 0) {
+        let recordTotal = parseFloat(h.total ?? h.total_amount ?? h.amount ?? h.grand_total ?? 0) || 0;
+        if (recordTotal === 0 && Array.isArray(h.items) && h.items.length > 0) {
+          recordTotal = h.items.reduce((iAcc, it) => iAcc + ((parseFloat(it.price || it.unit_price) || 0) * (parseInt(it.qty || it.quantity) || 1)), 0);
+        }
+        const recordPaid = parseFloat(h.amount_paid ?? h.paid ?? h.paid_amount ?? 0) || 0;
+        if (recordTotal > recordPaid && recordPaid > 0) {
+          recordDebt = recordTotal - recordPaid;
+        }
+      }
+      return hAcc + recordDebt;
+    }, 0);
+
+    return acc + Math.max(directDebt, historyDebt);
+  }, 0);
 
   const getProductSoldQty = (productId) => {
     return contextCustomers.reduce((acc, c) => acc + (c.history || []).reduce((hAcc, h) => {
@@ -650,25 +727,13 @@ export default function AdminApp({ currentUser, supabase }) {
   const totalInventoryCost = contextProducts.reduce((acc, p) => acc + ((parseFloat(p.cost_price) || 0) * getTrueInitialQty(p)), 0);
   const totalExpectedRevenue = contextProducts.reduce((acc, p) => acc + ((parseFloat(p.price) || 0) * getTrueInitialQty(p)), 0);
   const totalPotentialRetail = contextProducts.filter(p => !p.is_archived).reduce((acc, p) => acc + ((parseFloat(p.price) || 0) * (parseInt(p.quantity) || 0)), 0);
-  
-  const totalGoodsSoldCost = contextProducts.reduce((acc, p) => {
-    const soldQty = getProductSoldQty(p.id);
-    const unitCost = parseFloat(p.cost_price || p.costPrice) || 0;
-    return acc + (unitCost * soldQty);
-  }, 0);
-
-  const totalSalesRevenue = contextCustomers.reduce((acc, c) => {
-    const customerSales = (c.history || []).reduce((hAcc, h) => hAcc + (parseFloat(h.total || h.total_amount || h.amount) || 0), 0);
-    return acc + customerSales;
-  }, 0);
-
-  const totalOutstandingDebt = contextCustomers.reduce((acc, c) => acc + (parseFloat(c.totalDebt || c.total_debt) || 0), 0);
 
   const uniqueBatches = ['ALL', ...new Set(contextProducts.map(p => p.batch_reference).filter(Boolean))];
   const filteredProducts = contextProducts.filter(p => {
     const matchesBatch = selectedBatchFilter === 'ALL' || p.batch_reference === selectedBatchFilter;
     const matchesArchiveState = showArchived ? p.is_archived : !p.is_archived;
-    return matchesBatch && matchesArchiveState;
+    const matchesLowStock = showLowStockOnly ? (parseInt(p.quantity) || 0) <= 3 : true;
+    return matchesBatch && matchesArchiveState && matchesLowStock;
   });
 
   const storefrontFilteredProducts = products.filter(p => {
@@ -698,15 +763,40 @@ export default function AdminApp({ currentUser, supabase }) {
                 <button onClick={() => setActiveTab('branches')} className={`px-5 py-2.5 text-sm font-semibold rounded-lg flex items-center space-x-2 transition-all ${activeTab === 'branches' ? 'bg-[#0f172a] text-white shadow-md' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}><Store className="w-4 h-4" /> <span>Branches & HQ</span></button>
               </div>
 
-              {/* ADMIN BRANCH GLOBAL FILTER */}
-              <div className="flex items-center gap-2 border border-gray-200 px-4 py-2 rounded-lg bg-gray-50 shadow-sm">
-                <Filter className="w-4 h-4 text-gray-500" />
-                <select value={viewingBranch} onChange={(e) => setViewingBranch(e.target.value)} className="bg-transparent text-sm font-semibold text-gray-800 outline-none cursor-pointer">
-                  <option value="">HQ Main Stock (Default)</option>
-                  <option value="ALL">Global View (All Branches)</option>
-                  <option value="divider" disabled>──────────</option>
-                  {branches.map(b => <option key={b.id} value={b.id}>View: {b.name}</option>)}
-                </select>
+              <div className="flex items-center gap-3">
+                {/* BLINKING LOW STOCK ALERT BUTTON */}
+                <button 
+                  onClick={() => {
+                    setActiveTab('inventory');
+                    setShowLowStockOnly(prev => !prev);
+                  }}
+                  className={`px-3 py-2 rounded-lg text-xs font-extrabold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer ${
+                    hasLowStock 
+                      ? (showLowStockOnly 
+                          ? 'bg-red-700 text-white ring-2 ring-red-400' 
+                          : 'bg-red-600 text-white animate-pulse ring-2 ring-red-300')
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                  title={hasLowStock ? `${lowStockProducts.length} produit(s) en stock critique (≤ 3)` : 'Stock normal'}
+                >
+                  <AlertTriangle className={`w-4 h-4 ${hasLowStock ? 'text-amber-300 animate-bounce' : 'text-gray-400'}`} />
+                  <span>
+                    {showLowStockOnly 
+                      ? `Filtré: Stock Bas (${lowStockProducts.length})` 
+                      : `Stock Critique (${lowStockProducts.length})`}
+                  </span>
+                </button>
+
+                {/* ADMIN BRANCH GLOBAL FILTER */}
+                <div className="flex items-center gap-2 border border-gray-200 px-4 py-2 rounded-lg bg-gray-50 shadow-sm">
+                  <Filter className="w-4 h-4 text-gray-500" />
+                  <select value={viewingBranch} onChange={(e) => setViewingBranch(e.target.value)} className="bg-transparent text-sm font-semibold text-gray-800 outline-none cursor-pointer">
+                    <option value="">HQ Main Stock (Default)</option>
+                    <option value="ALL">Global View (All Branches)</option>
+                    <option value="divider" disabled>──────────</option>
+                    {branches.map(b => <option key={b.id} value={b.id}>View: {b.name}</option>)}
+                  </select>
+                </div>
               </div>
             </div>
           </div>
