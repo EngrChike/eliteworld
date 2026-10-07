@@ -1,5 +1,23 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Package, Users, Eye, EyeOff, UserCog, Store, Filter, Lock, Globe, ReceiptText, AlertTriangle } from 'lucide-react';
+import { 
+  Boxes, 
+  UsersRound, 
+  Eye, 
+  EyeOff, 
+  UserCog, 
+  Building2, 
+  ListFilter, 
+  ShieldCheck, 
+  Globe, 
+  ArrowLeftRight, 
+  ShieldAlert, 
+  Wallet, 
+  BarChart3, 
+  TrendingUp, 
+  History,
+  Store,
+  Sparkles
+} from 'lucide-react';
 import SalesLedger from './SalesLedger';
 import InventoryManagement from './components/InventoryManagement';
 import BranchManagement from './components/BranchManagement';
@@ -160,13 +178,11 @@ export default function AdminApp({ currentUser, supabase }) {
   // --- BULLETPROOF CUSTOMER & SALES FETCHING ---
   const fetchCustomersFromSupabase = async () => {
     try {
-      // 1. Fetch registered customers
       const { data: cData } = await supabase.from('customers').select('*').order('created_at', { ascending: false });
       let rawCustomers = cData || [];
 
       let historyData = [];
 
-      // 2. Concurrently fetch from ALL potential sales tables to bypass silent embed failures
       const [res1, res2, res3] = await Promise.all([
         supabase.from('customer_history').select('*'),
         supabase.from('sales_ledger').select('*'),
@@ -177,14 +193,12 @@ export default function AdminApp({ currentUser, supabase }) {
       if (res1.data && res1.data.length > 0) historyData = [...historyData, ...res1.data];
       if (res3.data && res3.data.length > 0) historyData = [...historyData, ...res3.data];
 
-      // 3. Deduplicate by ID to prevent overlap if tables share records
       const uniqueHistoryMap = new Map();
       historyData.forEach(item => {
         if (item.id) uniqueHistoryMap.set(item.id, item);
       });
       historyData = Array.from(uniqueHistoryMap.values());
 
-      // 4. Attach sales history directly to customers
       rawCustomers = rawCustomers.map(c => {
         const cHist = historyData.filter(h => 
           String(h.customer_id || h.customerId || h.client_id) === String(c.id)
@@ -192,7 +206,6 @@ export default function AdminApp({ currentUser, supabase }) {
         return { ...c, customer_history: cHist };
       });
 
-      // 5. Catch Orphan Sales (Direct walk-in sales without a specific customer ID)
       const orphanSales = historyData.filter(h => !h.customer_id && !h.customerId && !h.client_id);
       if (orphanSales.length > 0) {
         rawCustomers.push({
@@ -205,7 +218,6 @@ export default function AdminApp({ currentUser, supabase }) {
         });
       }
 
-      // 6. Format math calculations cleanly
       const formatted = rawCustomers.map(c => {
         const rawHistory = c.customer_history || [];
         const formattedHistory = rawHistory.map(h => {
@@ -792,46 +804,108 @@ export default function AdminApp({ currentUser, supabase }) {
   const activeSelectedArray = Object.values(selectedBatchItems).filter(i => i.selected);
 
   return (
-    <div className="bg-[#f8f9fa] text-gray-800 font-sans p-3 sm:p-6 lg:p-8 min-h-screen">
+    <div className="bg-[#f8fafc] text-slate-900 font-sans p-4 sm:p-6 lg:p-8 min-h-screen selection:bg-slate-900 selection:text-white">
       <div className="max-w-7xl mx-auto space-y-6">
         
+        {/* HEADER NAVIGATION */}
         {isAdmin ? (
-          <div className="flex flex-col gap-4 bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+          <div className="flex flex-col gap-4 bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm backdrop-blur-xl">
             <div className="flex flex-wrap items-center justify-between gap-4">
+              
               <div className="flex flex-wrap gap-2">
-                <button onClick={() => setActiveTab('inventory')} className={`px-5 py-2.5 text-sm font-semibold rounded-lg flex items-center space-x-2 transition-all ${activeTab === 'inventory' ? 'bg-[#0f172a] text-white shadow-md' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}><Package className="w-4 h-4" /> <span>Inventory</span></button>
-                <button onClick={() => setActiveTab('customers')} className={`px-5 py-2.5 text-sm font-semibold rounded-lg flex items-center space-x-2 transition-all ${activeTab === 'customers' ? 'bg-[#0f172a] text-white shadow-md' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}><Users className="w-4 h-4" /> <span>Sales Ledger</span></button>
-                <button onClick={() => setActiveTab('storefront')} className={`px-5 py-2.5 text-sm font-semibold rounded-lg flex items-center space-x-2 transition-all ${activeTab === 'storefront' ? 'bg-[#0f172a] text-white shadow-md' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}><Eye className="w-4 h-4" /> <span>Storefront</span></button>
-                <button onClick={() => setActiveTab('staff')} className={`px-5 py-2.5 text-sm font-semibold rounded-lg flex items-center space-x-2 transition-all ${activeTab === 'staff' ? 'bg-[#0f172a] text-white shadow-md' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}><UserCog className="w-4 h-4" /> <span>Staff</span></button>
-                <button onClick={() => setActiveTab('branches')} className={`px-5 py-2.5 text-sm font-semibold rounded-lg flex items-center space-x-2 transition-all ${activeTab === 'branches' ? 'bg-[#0f172a] text-white shadow-md' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}><Store className="w-4 h-4" /> <span>Branches & HQ</span></button>
+                <button 
+                  onClick={() => setActiveTab('inventory')} 
+                  className={`px-4 py-2.5 text-xs sm:text-sm font-semibold rounded-xl flex items-center space-x-2 transition-all duration-200 cursor-pointer ${
+                    activeTab === 'inventory' 
+                      ? 'bg-slate-900 text-white shadow-md shadow-slate-900/10' 
+                      : 'bg-slate-50 text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  }`}
+                >
+                  <Boxes className="w-4 h-4 text-emerald-400" /> 
+                  <span>Inventory</span>
+                </button>
+
+                <button 
+                  onClick={() => setActiveTab('customers')} 
+                  className={`px-4 py-2.5 text-xs sm:text-sm font-semibold rounded-xl flex items-center space-x-2 transition-all duration-200 cursor-pointer ${
+                    activeTab === 'customers' 
+                      ? 'bg-slate-900 text-white shadow-md shadow-slate-900/10' 
+                      : 'bg-slate-50 text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  }`}
+                >
+                  <UsersRound className="w-4 h-4 text-blue-400" /> 
+                  <span>Sales Ledger</span>
+                </button>
+
+                <button 
+                  onClick={() => setActiveTab('storefront')} 
+                  className={`px-4 py-2.5 text-xs sm:text-sm font-semibold rounded-xl flex items-center space-x-2 transition-all duration-200 cursor-pointer ${
+                    activeTab === 'storefront' 
+                      ? 'bg-slate-900 text-white shadow-md shadow-slate-900/10' 
+                      : 'bg-slate-50 text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  }`}
+                >
+                  <Globe className="w-4 h-4 text-indigo-400" /> 
+                  <span>Storefront</span>
+                </button>
+
+                <button 
+                  onClick={() => setActiveTab('staff')} 
+                  className={`px-4 py-2.5 text-xs sm:text-sm font-semibold rounded-xl flex items-center space-x-2 transition-all duration-200 cursor-pointer ${
+                    activeTab === 'staff' 
+                      ? 'bg-slate-900 text-white shadow-md shadow-slate-900/10' 
+                      : 'bg-slate-50 text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  }`}
+                >
+                  <UserCog className="w-4 h-4 text-amber-400" /> 
+                  <span>Staff</span>
+                </button>
+
+                <button 
+                  onClick={() => setActiveTab('branches')} 
+                  className={`px-4 py-2.5 text-xs sm:text-sm font-semibold rounded-xl flex items-center space-x-2 transition-all duration-200 cursor-pointer ${
+                    activeTab === 'branches' 
+                      ? 'bg-slate-900 text-white shadow-md shadow-slate-900/10' 
+                      : 'bg-slate-50 text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  }`}
+                >
+                  <Building2 className="w-4 h-4 text-purple-400" /> 
+                  <span>Branches & HQ</span>
+                </button>
               </div>
 
               <div className="flex items-center gap-3">
+                {/* LOW STOCK ALERT BUTTON */}
                 <button 
                   onClick={() => {
                     setActiveTab('inventory');
                     setShowLowStockOnly(prev => !prev);
                   }}
-                  className={`px-3 py-2 rounded-lg text-xs font-extrabold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer ${
+                  className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center space-x-2 shadow-sm transition-all duration-200 cursor-pointer ${
                     hasLowStock 
                       ? (showLowStockOnly 
-                          ? 'bg-red-700 text-white ring-2 ring-red-400' 
-                          : 'bg-red-600 text-white animate-pulse ring-2 ring-red-300')
-                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                          ? 'bg-rose-700 text-white ring-2 ring-rose-400' 
+                          : 'bg-rose-600 text-white animate-pulse ring-2 ring-rose-300')
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                   }`}
                   title={hasLowStock ? `${lowStockProducts.length} produit(s) en stock critique (≤ 3)` : 'Stock normal'}
                 >
-                  <AlertTriangle className={`w-4 h-4 ${hasLowStock ? 'text-amber-300 animate-bounce' : 'text-gray-400'}`} />
+                  <ShieldAlert className={`w-4 h-4 ${hasLowStock ? 'text-amber-200 animate-bounce' : 'text-slate-400'}`} />
                   <span>
                     {showLowStockOnly 
-                      ? `Filtré: Stock Bas (${lowStockProducts.length})` 
-                      : `Stock Critique (${lowStockProducts.length})`}
+                      ? `Stock Bas: ${lowStockProducts.length}` 
+                      : `Critique: ${lowStockProducts.length}`}
                   </span>
                 </button>
 
-                <div className="flex items-center gap-2 border border-gray-200 px-4 py-2 rounded-lg bg-gray-50 shadow-sm">
-                  <Filter className="w-4 h-4 text-gray-500" />
-                  <select value={viewingBranch} onChange={(e) => setViewingBranch(e.target.value)} className="bg-transparent text-sm font-semibold text-gray-800 outline-none cursor-pointer">
+                {/* BRANCH FILTER DROPDOWN */}
+                <div className="flex items-center gap-2 border border-slate-200 px-3.5 py-2 rounded-xl bg-slate-50/80 shadow-sm">
+                  <ListFilter className="w-4 h-4 text-slate-400" />
+                  <select 
+                    value={viewingBranch} 
+                    onChange={(e) => setViewingBranch(e.target.value)} 
+                    className="bg-transparent text-xs sm:text-sm font-semibold text-slate-700 outline-none cursor-pointer"
+                  >
                     <option value="">HQ Main Stock (Default)</option>
                     <option value="ALL">Global View (All Branches)</option>
                     <option value="divider" disabled>──────────</option>
@@ -842,29 +916,30 @@ export default function AdminApp({ currentUser, supabase }) {
             </div>
           </div>
         ) : (
-          <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex justify-between items-center">
-            <h2 className="text-sm font-bold uppercase text-gray-800 flex items-center gap-2">
-              <Users className="w-5 h-5 text-[#0f172a]" /> Staff Portal - {currentUser.full_name}
+          <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex justify-between items-center">
+            <h2 className="text-sm font-bold uppercase tracking-wide text-slate-800 flex items-center gap-2">
+              <UsersRound className="w-5 h-5 text-slate-900" /> Staff Portal — {currentUser.full_name}
             </h2>
-            <span className="text-xs font-semibold bg-blue-50 px-3 py-1.5 rounded-full text-blue-700 border border-blue-100">
+            <span className="text-xs font-bold bg-blue-50 px-3 py-1.5 rounded-full text-blue-700 border border-blue-100">
               {branches.find(b => b.id === currentUser.branch_id)?.name || 'HQ / Main'}
             </span>
           </div>
         )}
 
+        {/* FINANCIAL METRICS */}
         {isAdmin && (
           <div className="space-y-3">
             <div className="flex justify-between items-center px-1">
-              <span className="text-xs font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
-                <Lock className="w-3.5 h-3.5 text-gray-400" /> Performance Financière
+              <span className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                <ShieldCheck className="w-4 h-4 text-slate-400" /> Performance Financière & Tableaux de Bord
               </span>
               <button
                 onClick={handleToggleFinancialVisibility}
-                className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg bg-white hover:bg-gray-100 text-gray-700 transition-all border border-gray-200 shadow-sm cursor-pointer"
+                className="flex items-center gap-2 px-3.5 py-1.5 text-xs font-bold rounded-xl bg-white hover:bg-slate-50 text-slate-700 transition-all duration-200 border border-slate-200/80 shadow-sm cursor-pointer active:scale-95"
               >
                 {showFinancials ? (
                   <>
-                    <EyeOff className="w-4 h-4 text-red-500" />
+                    <EyeOff className="w-4 h-4 text-rose-500" />
                     <span>Masquer les chiffres</span>
                   </>
                 ) : (
@@ -876,35 +951,41 @@ export default function AdminApp({ currentUser, supabase }) {
               </button>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-              <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
-                <p className="text-[11px] font-semibold tracking-wider uppercase text-gray-500">Total Asset Cost</p>
-                <p className="text-lg font-bold text-gray-900 mt-2">{formatMoney(totalInventoryCost)}</p>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
+              <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-md transition-all duration-200 group">
+                <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400">Total Asset Cost</p>
+                <p className="text-base sm:text-lg font-black text-slate-900 mt-2 tracking-tight">{formatMoney(totalInventoryCost)}</p>
               </div>
-              <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
-                <p className="text-[11px] font-semibold tracking-wider uppercase text-gray-500">Expected Revenue</p>
-                <p className="text-lg font-bold text-indigo-700 mt-2">{formatMoney(totalExpectedRevenue)}</p>
+
+              <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-md transition-all duration-200 group">
+                <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-indigo-500">Expected Revenue</p>
+                <p className="text-base sm:text-lg font-black text-indigo-600 mt-2 tracking-tight">{formatMoney(totalExpectedRevenue)}</p>
               </div>
-              <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
-                <p className="text-[11px] font-semibold tracking-wider uppercase text-gray-500">Current Stock Value</p>
-                <p className="text-lg font-bold text-emerald-600 mt-2">{formatMoney(totalPotentialRetail)}</p>
+
+              <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-md transition-all duration-200 group">
+                <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-emerald-500">Stock Value</p>
+                <p className="text-base sm:text-lg font-black text-emerald-600 mt-2 tracking-tight">{formatMoney(totalPotentialRetail)}</p>
               </div>
-              <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
-                <p className="text-[11px] font-semibold tracking-wider uppercase text-gray-500">Cost of Goods Sold</p>
-                <p className="text-lg font-bold text-purple-700 mt-2">{formatMoney(totalGoodsSoldCost)}</p>
+
+              <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-md transition-all duration-200 group">
+                <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-purple-500">COGS (Sold Cost)</p>
+                <p className="text-base sm:text-lg font-black text-purple-600 mt-2 tracking-tight">{formatMoney(totalGoodsSoldCost)}</p>
               </div>
-              <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
-                <p className="text-[11px] font-semibold tracking-wider uppercase text-gray-500">Total Sales (Rev)</p>
-                <p className="text-lg font-bold text-blue-700 mt-2">{formatMoney(totalSalesRevenue)}</p>
+
+              <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-md transition-all duration-200 group">
+                <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-blue-500">Total Sales (Rev)</p>
+                <p className="text-base sm:text-lg font-black text-blue-600 mt-2 tracking-tight">{formatMoney(totalSalesRevenue)}</p>
               </div>
-              <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow border-t-4 border-t-red-500">
-                <p className="text-[11px] font-semibold tracking-wider uppercase text-gray-500">Outstanding Debts</p>
-                <p className="text-lg font-bold text-red-600 mt-2">{formatMoney(totalOutstandingDebt)}</p>
+
+              <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-md transition-all duration-200 border-t-4 border-t-rose-500 group">
+                <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-rose-500">Outstanding Debts</p>
+                <p className="text-base sm:text-lg font-black text-rose-600 mt-2 tracking-tight">{formatMoney(totalOutstandingDebt)}</p>
               </div>
             </div>
           </div>
         )}
 
+        {/* TAB 1: BRANCHES & HQ MANAGEMENT */}
         {isAdmin && activeTab === 'branches' && (
           <BranchManagement 
             branches={branches}
@@ -921,6 +1002,7 @@ export default function AdminApp({ currentUser, supabase }) {
           />
         )}
 
+        {/* TAB 2: INVENTORY MANAGEMENT */}
         {isAdmin && activeTab === 'inventory' && (
           <InventoryManagement 
             branches={branches}
@@ -959,6 +1041,7 @@ export default function AdminApp({ currentUser, supabase }) {
           />
         )}
 
+        {/* TAB 3: SALES LEDGER */}
         {activeTab === 'customers' && (
           <SalesLedger 
             products={contextProducts}
@@ -971,27 +1054,28 @@ export default function AdminApp({ currentUser, supabase }) {
           />
         )}
 
+        {/* TAB 4: STOREFRONT PREVIEW & GLOBAL STORE CONTROL */}
         {isAdmin && activeTab === 'storefront' && (
           <div className="space-y-6">
             
-            <div className="bg-white p-5 sm:p-6 rounded-xl border-2 border-emerald-500/20 shadow-sm bg-gradient-to-r from-emerald-50/50 to-white">
+            <div className="bg-white p-5 sm:p-6 rounded-2xl border border-emerald-500/30 shadow-sm bg-gradient-to-r from-emerald-50/40 via-white to-white">
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div>
-                  <h3 className="text-lg font-black text-emerald-900 flex items-center gap-2">
+                  <h3 className="text-base sm:text-lg font-black text-emerald-950 flex items-center gap-2.5">
                     <Globe className="w-5 h-5 text-emerald-600" />
                     Configuration de la Boutique Publique
                   </h3>
-                  <p className="text-sm text-gray-600 mt-1">
-                    Sélectionnez la succursale dont le stock sera <span className="font-semibold text-emerald-700">actuellement visible</span> par vos clients sur le lien public. (PIN Admin requis)
+                  <p className="text-xs sm:text-sm text-slate-600 mt-1">
+                    Sélectionnez la succursale dont le stock sera <span className="font-bold text-emerald-700">actuellement visible</span> par vos clients sur le lien public. (PIN Admin requis)
                   </p>
                 </div>
-                <div className="flex items-center gap-3 bg-white p-2.5 rounded-lg border border-gray-200 shadow-sm min-w-[220px]">
+                <div className="flex items-center gap-3 bg-white p-2.5 rounded-xl border border-slate-200 shadow-sm min-w-[240px]">
                    <div className="flex flex-col w-full">
-                     <span className="text-[10px] uppercase font-bold text-gray-400">Succursale Active en Ligne</span>
+                     <span className="text-[10px] uppercase font-black text-slate-400">Succursale Active en Ligne</span>
                      <select 
                        value={liveStoreBranch}
                        onChange={(e) => handleUpdateLiveBranch(e.target.value)}
-                       className="text-sm font-bold text-gray-900 bg-transparent outline-none cursor-pointer w-full mt-0.5"
+                       className="text-sm font-bold text-slate-900 bg-transparent outline-none cursor-pointer w-full mt-0.5"
                      >
                        <option value="">Siège Principal (HQ)</option>
                        {branches.map(b => (
@@ -1003,14 +1087,14 @@ export default function AdminApp({ currentUser, supabase }) {
               </div>
             </div>
 
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 space-y-6">
-              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-gray-100 pb-4">
+            <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm p-5 sm:p-6 space-y-6">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-100 pb-4">
                 <div>
-                  <h3 className="text-base font-black text-gray-900 flex items-center gap-2">
-                    <Eye className="w-5 h-5 text-indigo-600" />
+                  <h3 className="text-base font-black text-slate-900 flex items-center gap-2">
+                    <Sparkles className="w-5 h-5 text-indigo-600" />
                     Aperçu du Catalogue de la Vitrine Publique
                   </h3>
-                  <p className="text-xs text-gray-500 mt-0.5">
+                  <p className="text-xs text-slate-500 mt-0.5">
                     Visualisez les articles actuellement affichés aux clients pour la succursale sélectionnée.
                   </p>
                 </div>
@@ -1019,7 +1103,7 @@ export default function AdminApp({ currentUser, supabase }) {
                   <select 
                     value={storefrontBranch}
                     onChange={(e) => setStorefrontBranch(e.target.value)}
-                    className="px-3 py-2 bg-gray-50 border border-gray-300 rounded-lg text-sm font-semibold text-gray-800 outline-none cursor-pointer w-full sm:w-auto"
+                    className="px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs sm:text-sm font-semibold text-slate-800 outline-none cursor-pointer w-full sm:w-auto"
                   >
                     <option value="">Aperçu : Siège Principal (HQ)</option>
                     {branches.map(b => (
@@ -1033,7 +1117,7 @@ export default function AdminApp({ currentUser, supabase }) {
                       navigator.clipboard.writeText(url);
                       alert("Lien de la boutique copié dans le presse-papier !");
                     }}
-                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-lg shadow-sm transition-all whitespace-nowrap cursor-pointer"
+                    className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs sm:text-sm font-bold rounded-xl shadow-sm transition-all whitespace-nowrap cursor-pointer active:scale-95"
                   >
                     Copier le lien
                   </button>
@@ -1041,33 +1125,33 @@ export default function AdminApp({ currentUser, supabase }) {
               </div>
 
               {storefrontFilteredProducts.length === 0 ? (
-                <div className="text-center py-12 bg-gray-50 rounded-xl border border-dashed border-gray-200">
-                  <Package className="w-10 h-10 text-gray-400 mx-auto mb-3" />
-                  <p className="text-sm font-bold text-gray-700">Aucun produit disponible dans cette succursale</p>
-                  <p className="text-xs text-gray-500 mt-1">Ajoutez du stock ou transférez des articles vers cette succursale pour les afficher.</p>
+                <div className="text-center py-12 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                  <Boxes className="w-10 h-10 text-slate-300 mx-auto mb-3" />
+                  <p className="text-sm font-bold text-slate-700">Aucun produit disponible dans cette succursale</p>
+                  <p className="text-xs text-slate-500 mt-1">Ajoutez du stock ou transférez des articles vers cette succursale pour les afficher.</p>
                 </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                   {storefrontFilteredProducts.map(product => (
-                    <div key={product.id} className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm hover:shadow-md transition-all flex flex-col">
-                      <div className="h-48 bg-gray-100 relative overflow-hidden">
+                    <div key={product.id} className="bg-white rounded-2xl border border-slate-200/80 overflow-hidden shadow-sm hover:shadow-md transition-all duration-200 flex flex-col group">
+                      <div className="h-48 bg-slate-100 relative overflow-hidden">
                         <img 
                           src={product.image_url || 'https://images.unsplash.com/photo-1522337660859-02fbefca4702?auto=format&fit=crop&w=800&q=80'} 
                           alt={product.name}
-                          className="w-full h-full object-cover"
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                         />
-                        <span className="absolute top-2 right-2 bg-black/65 backdrop-blur-md text-white text-[10px] font-bold px-2.5 py-1 rounded-full">
+                        <span className="absolute top-2.5 right-2.5 bg-slate-900/75 backdrop-blur-md text-white text-[10px] font-bold px-3 py-1 rounded-full">
                           Stock : {product.quantity}
                         </span>
                       </div>
                       <div className="p-4 flex flex-col flex-1 justify-between space-y-3">
                         <div>
-                          <h4 className="text-sm font-bold text-gray-900 line-clamp-1">{product.name}</h4>
-                          <p className="text-xs text-gray-500 line-clamp-2 mt-1">{product.description || 'Aucune description fournie.'}</p>
+                          <h4 className="text-sm font-bold text-slate-900 line-clamp-1">{product.name}</h4>
+                          <p className="text-xs text-slate-500 line-clamp-2 mt-1">{product.description || 'Aucune description fournie.'}</p>
                         </div>
-                        <div className="flex items-center justify-between pt-3 border-t border-gray-100">
-                          <span className="text-xs text-gray-400 uppercase font-mono">Ref: {product.batch_reference || 'N/A'}</span>
-                          <span className="text-sm font-extrabold text-emerald-600">{(product.price || 0).toLocaleString()} FCFA</span>
+                        <div className="flex items-center justify-between pt-3 border-t border-slate-100">
+                          <span className="text-[10px] text-slate-400 uppercase font-mono font-bold">Réf: {product.batch_reference || 'N/A'}</span>
+                          <span className="text-sm font-black text-emerald-600">{(product.price || 0).toLocaleString()} FCFA</span>
                         </div>
                       </div>
                     </div>
@@ -1078,6 +1162,7 @@ export default function AdminApp({ currentUser, supabase }) {
           </div>
         )}
 
+        {/* TAB 5: STAFF MANAGEMENT */}
         {isAdmin && activeTab === 'staff' && (
           <StaffManagement 
             supabase={supabase}
@@ -1102,6 +1187,7 @@ export default function AdminApp({ currentUser, supabase }) {
         )}
       </div>
 
+      {/* MULTI-PRODUCT BATCH TRANSFER MODAL */}
       <BatchTransferModal 
         batchTransferOpen={batchTransferOpen}
         setBatchTransferOpen={setBatchTransferOpen}
@@ -1119,6 +1205,7 @@ export default function AdminApp({ currentUser, supabase }) {
         batchTransferLoading={batchTransferLoading}
       />
 
+      {/* TRANSFER HISTORY & RECEIPTS MODAL */}
       <TransferHistoryModal 
         isOpen={transferHistoryOpen}
         onClose={() => setTransferHistoryOpen(false)}
@@ -1126,16 +1213,17 @@ export default function AdminApp({ currentUser, supabase }) {
         branches={branches}
       />
 
+      {/* SECURE ADMIN PIN MODAL */}
       {adminPinModalOpen && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-gray-100 space-y-4 animate-in fade-in zoom-in-95 duration-200">
-            <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center text-amber-600">
-                <Lock className="w-5 h-5" />
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-6 sm:p-8 shadow-2xl border border-slate-100 space-y-6 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex flex-col items-center text-center space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center text-slate-900 shadow-inner">
+                <ShieldCheck className="w-6 h-6" />
               </div>
               <div>
-                <h3 className="text-base font-bold text-gray-900">Sécurité Admin</h3>
-                <p className="text-xs text-gray-500">Entrez votre code PIN Administrateur pour confirmer :</p>
+                <h3 className="text-lg font-black text-slate-900">Sécurité Administrateur</h3>
+                <p className="text-xs text-slate-500 mt-1">Entrez votre code PIN (6 chiffres) pour confirmer cette action sécurisée :</p>
               </div>
             </div>
 
@@ -1143,7 +1231,7 @@ export default function AdminApp({ currentUser, supabase }) {
               e.preventDefault();
               const verifyingAdmin = staffList.find(s => s.pin_code === adminPinInput && s.role === 'admin' && s.is_active);
               if (!verifyingAdmin) {
-                setAdminPinError("Code PIN incorrect.");
+                setAdminPinError("Code PIN incorrect ou privilèges insuffisants.");
                 return;
               }
               setAdminPinModalOpen(false);
@@ -1157,12 +1245,13 @@ export default function AdminApp({ currentUser, supabase }) {
                     setAdminPinInput(e.target.value);
                     if (adminPinError) setAdminPinError('');
                   }}
-                  placeholder="••••••••"
+                  placeholder="••••••"
+                  maxLength={6}
                   autoFocus
-                  className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-xl text-center text-xl tracking-widest font-mono focus:bg-white focus:ring-2 focus:ring-[#0f172a] focus:outline-none transition-all"
+                  className="w-full px-4 py-3.5 bg-slate-50 border border-slate-300 rounded-2xl text-center text-2xl tracking-[0.4em] font-mono font-bold focus:bg-white focus:ring-2 focus:ring-slate-900 focus:outline-none transition-all shadow-sm"
                 />
                 {adminPinError && (
-                  <p className="text-xs text-red-600 mt-1.5 font-medium text-center">{adminPinError}</p>
+                  <p className="text-xs text-rose-600 mt-2 font-bold text-center">{adminPinError}</p>
                 )}
               </div>
 
@@ -1173,13 +1262,13 @@ export default function AdminApp({ currentUser, supabase }) {
                     setAdminPinModalOpen(false);
                     if (adminPinResolve) adminPinResolve(false);
                   }}
-                  className="flex-1 py-2.5 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold rounded-xl text-sm transition-all cursor-pointer"
+                  className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-2xl text-xs sm:text-sm transition-all cursor-pointer active:scale-95"
                 >
                   Annuler
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 px-4 bg-[#0f172a] hover:bg-slate-800 text-white font-semibold rounded-xl text-sm shadow-md transition-all cursor-pointer"
+                  className="flex-1 py-3 px-4 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-2xl text-xs sm:text-sm shadow-lg shadow-slate-900/20 transition-all cursor-pointer active:scale-95"
                 >
                   Confirmer
                 </button>
