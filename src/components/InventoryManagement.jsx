@@ -1,5 +1,5 @@
 ﻿import React from 'react';
-import { Layers, ArrowRightLeft, X, Pencil, Archive, ReceiptText } from 'lucide-react';
+import { Layers, ArrowRightLeft, X, Pencil, Archive, ReceiptText, Trash2 } from 'lucide-react';
 
 export default function InventoryManagement({
   branches = [],
@@ -32,8 +32,43 @@ export default function InventoryManagement({
   filteredProducts = [],
   handleUpdateStockVolume,
   handleStartEditProduct,
-  handleArchiveProduct
+  handleArchiveProduct,
+  supabase,                    // 👈 Receives Supabase client from AdminApp
+  verifyAdminPinBeforeAction,  // 👈 Receives Admin PIN modal trigger from AdminApp
+  fetchProducts,               // Optional fallback refresher
+  setProducts                  // Optional state updater
 }) {
+
+  // Secure Product Deletion Handler with Admin PIN & Immediate State Deduction
+  const handleDeleteProduct = async (product) => {
+    if (verifyAdminPinBeforeAction) {
+      const authorized = await verifyAdminPinBeforeAction();
+      if (!authorized) return;
+    }
+
+    if (!window.confirm(`Êtes-vous sûr de vouloir supprimer définitivement "${product.name}" ? Cette action est irréversible et déduira le stock immédiatement.`)) {
+      return;
+    }
+
+    try {
+      if (!supabase) throw new Error("Client Supabase non initialisé.");
+
+      const { error } = await supabase.from('products').delete().eq('id', product.id);
+      if (error) throw error;
+
+      // Immediate local state deduction / removal
+      if (setProducts) {
+        setProducts(prev => prev.filter(p => String(p.id) !== String(product.id)));
+      } else if (fetchProducts) {
+        await fetchProducts();
+      }
+
+      alert("Produit supprimé avec succès et stock mis à jour !");
+    } catch (err) {
+      alert(`Erreur lors de la suppression : ${err.message}`);
+    }
+  };
+
   return (
     <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
       
@@ -177,7 +212,7 @@ export default function InventoryManagement({
             {/* BATCH TRANSFER BUTTON */}
             <button 
               onClick={handleOpenBatchTransfer}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3.5 py-2 rounded-lg flex items-center space-x-1.5 shadow-xs transition-all"
+              className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3.5 py-2 rounded-lg flex items-center space-x-1.5 shadow-xs transition-all cursor-pointer"
             >
               <ArrowRightLeft className="w-3.5 h-3.5" />
               <span>Transfert Groupé (QG → Succursales)</span>
@@ -187,7 +222,7 @@ export default function InventoryManagement({
             {handleOpenTransferHistory && (
               <button 
                 onClick={handleOpenTransferHistory}
-                className="bg-zinc-800 hover:bg-zinc-900 text-white text-xs font-bold px-3.5 py-2 rounded-lg flex items-center space-x-1.5 shadow-xs transition-all"
+                className="bg-zinc-800 hover:bg-zinc-900 text-white text-xs font-bold px-3.5 py-2 rounded-lg flex items-center space-x-1.5 shadow-xs transition-all cursor-pointer"
               >
                 <ReceiptText className="w-3.5 h-3.5 text-amber-400" />
                 <span>Reçus & Historique</span>
@@ -198,14 +233,14 @@ export default function InventoryManagement({
           <div className="flex items-center gap-3">
             <button 
               onClick={() => setShowArchived(!showArchived)} 
-              className="px-3.5 py-2 rounded-lg text-xs font-bold bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors"
+              className="px-3.5 py-2 rounded-lg text-xs font-bold bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors cursor-pointer"
             >
               {showArchived ? 'Voir Actifs' : 'Voir Archivés'}
             </button>
             <select 
               value={selectedBatchFilter} 
               onChange={e => setSelectedBatchFilter(e.target.value)} 
-              className="border border-gray-300 px-3 py-2 text-xs rounded-lg bg-white font-semibold focus:ring-2 focus:ring-[#0f172a] outline-none"
+              className="border border-gray-300 px-3 py-2 text-xs rounded-lg bg-white font-semibold focus:ring-2 focus:ring-[#0f172a] outline-none cursor-pointer"
             >
               {uniqueBatches.map(b => <option key={b} value={b}>{b}</option>)}
             </select>
@@ -265,15 +300,22 @@ export default function InventoryManagement({
                       </td>
                       <td className="p-3.5 text-center">
                         <div className="flex items-center justify-center space-x-3">
-                          <button title="Modifier Produit" onClick={() => handleStartEditProduct(p)} className="text-blue-600 hover:text-blue-800 transition-colors p-1">
+                          <button title="Modifier Produit" onClick={() => handleStartEditProduct(p)} className="text-blue-600 hover:text-blue-800 transition-colors p-1 cursor-pointer">
                             <Pencil className="w-4 h-4" />
                           </button>
                           <button 
                             title={p.is_archived ? "Restaurer" : "Archiver"} 
                             onClick={() => handleArchiveProduct(p.id, !p.is_archived)} 
-                            className={`${p.is_archived ? "text-emerald-600 hover:text-emerald-800" : "text-gray-400 hover:text-red-600"} transition-colors p-1`}
+                            className={`${p.is_archived ? "text-emerald-600 hover:text-emerald-800" : "text-gray-400 hover:text-red-600"} transition-colors p-1 cursor-pointer`}
                           >
                             <Archive className="w-4 h-4" />
+                          </button>
+                          <button 
+                            title="Supprimer Définitivement (PIN Admin requis)" 
+                            onClick={() => handleDeleteProduct(p)} 
+                            className="text-gray-400 hover:text-rose-600 transition-colors p-1 cursor-pointer"
+                          >
+                            <Trash2 className="w-4 h-4" />
                           </button>
                         </div>
                       </td>
