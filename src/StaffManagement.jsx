@@ -46,9 +46,15 @@ export default function StaffManagement({ supabase, branches = [] }) {
     setIsPinModalOpen(true);
   };
 
-  // 🔒 PIN Verification inside Modal (Safely decoupled for mobile rendering)
+  // 🔒 PIN Verification inside Modal (Fixed with input blur for iOS Chrome compatibility)
   const handleVerifyAdminPin = (e) => {
     e.preventDefault();
+
+    // Blur active input to dismiss iOS virtual keyboard smoothly and prevent Chrome white screen crash
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+
     const verifyingAdmin = staffList.find(s => s.pin_code === adminPinInput.trim() && s.role === 'admin' && s.is_active);
 
     if (!verifyingAdmin) {
@@ -58,14 +64,14 @@ export default function StaffManagement({ supabase, branches = [] }) {
 
     setIsPinModalOpen(false);
     
-    // Use a small timeout to prevent mobile UI thread lock/white screen on state change
+    // Safely delay state execution to let iOS Chrome finish keyboard dismissal animation
     setTimeout(() => {
       if (pendingActionRef.current) {
         const callback = pendingActionRef.current;
         pendingActionRef.current = null;
         callback();
       }
-    }, 50);
+    }, 100);
   };
 
   // --- STAFF ACTIONS ---
@@ -374,6 +380,7 @@ export default function StaffManagement({ supabase, branches = [] }) {
               <div>
                 <input
                   type="password"
+                  autoFocus
                   placeholder="••••"
                   value={adminPinInput}
                   onChange={(e) => setAdminPinInput(e.target.value)}
