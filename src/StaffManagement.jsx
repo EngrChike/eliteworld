@@ -46,7 +46,7 @@ export default function StaffManagement({ supabase, branches = [] }) {
     setIsPinModalOpen(true);
   };
 
-  // 🔒 PIN Verification inside Modal
+  // 🔒 PIN Verification inside Modal (Safely decoupled for mobile rendering)
   const handleVerifyAdminPin = (e) => {
     e.preventDefault();
     const verifyingAdmin = staffList.find(s => s.pin_code === adminPinInput.trim() && s.role === 'admin' && s.is_active);
@@ -57,11 +57,15 @@ export default function StaffManagement({ supabase, branches = [] }) {
     }
 
     setIsPinModalOpen(false);
-    if (pendingActionRef.current) {
-      const callback = pendingActionRef.current;
-      pendingActionRef.current = null;
-      callback();
-    }
+    
+    // Use a small timeout to prevent mobile UI thread lock/white screen on state change
+    setTimeout(() => {
+      if (pendingActionRef.current) {
+        const callback = pendingActionRef.current;
+        pendingActionRef.current = null;
+        callback();
+      }
+    }, 50);
   };
 
   // --- STAFF ACTIONS ---
