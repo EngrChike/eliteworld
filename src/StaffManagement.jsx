@@ -77,15 +77,14 @@ export default function StaffManagement({ supabase, branches = [] }) {
 
   // --- STAFF ACTIONS ---
 
+  // Opens form immediately without prompting for PIN first
   const handleStartEdit = (staff) => {
-    requestAdminAuth(() => {
-      setEditingStaff(staff);
-      setFormData({
-        fullName: staff.full_name || '',
-        pinCode: staff.pin_code || '',
-        role: staff.role || 'staff',
-        branchId: staff.branch_id || ''
-      });
+    setEditingStaff(staff);
+    setFormData({
+      fullName: staff.full_name || '',
+      pinCode: staff.pin_code || '',
+      role: staff.role || 'staff',
+      branchId: staff.branch_id || ''
     });
   };
 
@@ -94,38 +93,41 @@ export default function StaffManagement({ supabase, branches = [] }) {
     setFormData({ fullName: '', pinCode: '', role: 'staff', branchId: '' });
   };
 
-  const handleSaveStaff = async (e) => {
+  // Triggers admin PIN verification before saving edits or creating new accounts
+  const handleSaveStaff = (e) => {
     e.preventDefault();
     if (!formData.fullName || !formData.pinCode) return alert("Full name and PIN are required");
 
-    const payload = {
-      full_name: formData.fullName.trim(),
-      pin_code: formData.pinCode.trim(),
-      role: formData.role,
-      branch_id: formData.branchId || null
-    };
+    requestAdminAuth(async () => {
+      const payload = {
+        full_name: formData.fullName.trim(),
+        pin_code: formData.pinCode.trim(),
+        role: formData.role,
+        branch_id: formData.branchId || null
+      };
 
-    if (editingStaff) {
-      // EDITING
-      const { error } = await supabase.from('staff').update(payload).eq('id', editingStaff.id);
-      if (error) {
-        alert("Error updating staff account.");
+      if (editingStaff) {
+        // EDITING
+        const { error } = await supabase.from('staff').update(payload).eq('id', editingStaff.id);
+        if (error) {
+          alert("Error updating staff account.");
+        } else {
+          alert("Staff account updated successfully!");
+          handleCancelEdit();
+          fetchStaff();
+        }
       } else {
-        alert("Staff account updated successfully!");
-        handleCancelEdit();
-        fetchStaff();
+        // CREATION
+        const { error } = await supabase.from('staff').insert([payload]);
+        if (error) {
+          alert(error.code === '23505' ? "This PIN code is already in use." : "Error creating account.");
+        } else {
+          alert("Staff account created successfully!");
+          handleCancelEdit();
+          fetchStaff();
+        }
       }
-    } else {
-      // CREATION
-      const { error } = await supabase.from('staff').insert([payload]);
-      if (error) {
-        alert(error.code === '23505' ? "This PIN code is already in use." : "Error creating account.");
-      } else {
-        alert("Staff account created successfully!");
-        handleCancelEdit();
-        fetchStaff();
-      }
-    }
+    });
   };
 
   const toggleStaffStatus = (id, currentStatus) => {
@@ -226,7 +228,7 @@ export default function StaffManagement({ supabase, branches = [] }) {
 
             <div className="pt-2 flex flex-col gap-2">
               <button type="submit" className={`w-full text-white text-xs font-bold py-2.5 rounded-lg uppercase transition-colors shadow-sm ${editingStaff ? 'bg-blue-600 hover:bg-blue-700' : 'bg-[#0f172a] hover:bg-slate-800'}`}>
-                {editingStaff ? 'Save Changes' : 'Create Account'}
+                {editingStaff ? 'Save Changes (PIN Required)' : 'Create Account (PIN Required)'}
               </button>
               
               {editingStaff && (
@@ -245,7 +247,7 @@ export default function StaffManagement({ supabase, branches = [] }) {
               <span>Existing Accounts</span>
             </h3>
             <span className="text-[10px] text-orange-600 bg-orange-50 px-2 py-1 rounded-md flex items-center gap-1 font-semibold border border-orange-100">
-              <ShieldAlert className="w-3 h-3" /> Edit / Deactivation protected by PIN code
+              <ShieldAlert className="w-3 h-3" /> Saving / Deactivation protected by admin PIN
             </span>
           </div>
           
@@ -278,11 +280,11 @@ export default function StaffManagement({ supabase, branches = [] }) {
                     </td>
                     <td className="p-3 text-right">
                       <div className="flex items-center justify-end gap-2">
-                        {/* Edit Button */}
+                        {/* Edit Button - Opens instantly */}
                         <button 
                           onClick={() => handleStartEdit(staff)} 
                           className="p-1.5 rounded-md bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white transition-colors border border-blue-100 flex items-center gap-1 group"
-                          title="Edit (PIN required)"
+                          title="Edit details"
                         >
                           <Edit className="w-3.5 h-3.5" />
                         </button>
@@ -373,7 +375,7 @@ export default function StaffManagement({ supabase, branches = [] }) {
               </div>
               <div>
                 <h3 className="font-bold text-xs uppercase text-gray-800">Administrator Security</h3>
-                <p className="text-[11px] text-gray-500">Authorization required for this action</p>
+                <p className="text-[11px] text-gray-500">Authorization required to save changes</p>
               </div>
             </div>
 
@@ -404,7 +406,7 @@ export default function StaffManagement({ supabase, branches = [] }) {
                   type="submit"
                   className="w-1/2 py-2.5 bg-[#0f172a] text-white hover:bg-slate-800 text-xs font-bold rounded-lg uppercase transition-colors shadow-sm"
                 >
-                  Confirm
+                  Confirm & Save
                 </button>
               </div>
             </form>
