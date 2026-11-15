@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { UserPlus, UserCheck, UserX, Clock, Folder, ChevronDown, ChevronRight, Key, Edit, XCircle, ShieldAlert } from 'lucide-react';
 
 export default function StaffManagement({ supabase, branches = [] }) {
@@ -6,15 +6,15 @@ export default function StaffManagement({ supabase, branches = [] }) {
   const [salesHistory, setSalesHistory] = useState([]);
   const [expandedMonths, setExpandedMonths] = useState({});
   
-  // Form State (utilisé pour la Création ET la Modification)
+  // Form State (used for Creation and Editing)
   const [formData, setFormData] = useState({ fullName: '', pinCode: '', role: 'staff', branchId: '' });
   const [editingStaff, setEditingStaff] = useState(null);
 
-  // Modal Security State (Remplace window.prompt)
+  // Modal Security State (Replaces window.prompt)
   const [isPinModalOpen, setIsPinModalOpen] = useState(false);
   const [adminPinInput, setAdminPinInput] = useState('');
   const [pinError, setPinError] = useState('');
-  const [pendingAction, setPendingAction] = useState(null);
+  const pendingActionRef = useRef(null);
 
   useEffect(() => {
     fetchStaff();
@@ -38,40 +38,41 @@ export default function StaffManagement({ supabase, branches = [] }) {
     if (!error && data) setSalesHistory(data);
   };
 
-  // 🔒 Déclencheur de validation Admin
+  // 🔒 Admin Authentication Trigger using useRef for mobile stability
   const requestAdminAuth = (actionCallback) => {
     setAdminPinInput('');
     setPinError('');
-    setPendingAction(() => actionCallback);
+    pendingActionRef.current = actionCallback;
     setIsPinModalOpen(true);
   };
 
-  // 🔒 Soumission et vérification du PIN dans la Modal
+  // 🔒 PIN Verification inside Modal
   const handleVerifyAdminPin = (e) => {
     e.preventDefault();
     const verifyingAdmin = staffList.find(s => s.pin_code === adminPinInput.trim() && s.role === 'admin' && s.is_active);
 
     if (!verifyingAdmin) {
-      setPinError("❌ Code PIN administrateur incorrect ou non autorisé.");
+      setPinError("❌ Incorrect or unauthorized administrator PIN code.");
       return;
     }
 
     setIsPinModalOpen(false);
-    if (pendingAction) {
-      pendingAction();
-      setPendingAction(null);
+    if (pendingActionRef.current) {
+      const callback = pendingActionRef.current;
+      pendingActionRef.current = null;
+      callback();
     }
   };
 
-  // --- ACTIONS STAFF ---
+  // --- STAFF ACTIONS ---
 
   const handleStartEdit = (staff) => {
     requestAdminAuth(() => {
       setEditingStaff(staff);
       setFormData({
-        fullName: staff.full_name,
-        pinCode: staff.pin_code,
-        role: staff.role,
+        fullName: staff.full_name || '',
+        pinCode: staff.pin_code || '',
+        role: staff.role || 'staff',
         branchId: staff.branch_id || ''
       });
     });
@@ -84,7 +85,7 @@ export default function StaffManagement({ supabase, branches = [] }) {
 
   const handleSaveStaff = async (e) => {
     e.preventDefault();
-    if (!formData.fullName || !formData.pinCode) return alert("Nom complet et PIN requis");
+    if (!formData.fullName || !formData.pinCode) return alert("Full name and PIN are required");
 
     const payload = {
       full_name: formData.fullName.trim(),
@@ -94,22 +95,22 @@ export default function StaffManagement({ supabase, branches = [] }) {
     };
 
     if (editingStaff) {
-      // MODIFICATION
+      // EDITING
       const { error } = await supabase.from('staff').update(payload).eq('id', editingStaff.id);
       if (error) {
-        alert("Erreur lors de la modification.");
+        alert("Error updating staff account.");
       } else {
-        alert("Compte staff modifié avec succès !");
+        alert("Staff account updated successfully!");
         handleCancelEdit();
         fetchStaff();
       }
     } else {
-      // CRÉATION
+      // CREATION
       const { error } = await supabase.from('staff').insert([payload]);
       if (error) {
-        alert(error.code === '23505' ? "Ce code PIN est déjà utilisé." : "Erreur de création.");
+        alert(error.code === '23505' ? "This PIN code is already in use." : "Error creating account.");
       } else {
-        alert("Compte staff créé avec succès !");
+        alert("Staff account created successfully!");
         handleCancelEdit();
         fetchStaff();
       }
@@ -121,14 +122,14 @@ export default function StaffManagement({ supabase, branches = [] }) {
       const { error } = await supabase.from('staff').update({ is_active: !currentStatus }).eq('id', id);
       if (!error) {
         fetchStaff();
-        alert(`Statut du compte mis à jour (${!currentStatus ? 'Actif' : 'Désactivé'}).`);
+        alert(`Account status updated (${!currentStatus ? 'Active' : 'Inactive'}).`);
       } else {
-        alert("Erreur lors de la mise à jour.");
+        alert("Error updating status.");
       }
     });
   };
 
-  // --- LOGIQUE D'AFFICHAGE DES VENTES ---
+  // --- SALES DISPLAY LOGIC ---
   
   const toggleMonth = (monthKey) => setExpandedMonths(prev => ({ ...prev, [monthKey]: !prev[monthKey] }));
 
@@ -149,7 +150,7 @@ export default function StaffManagement({ supabase, branches = [] }) {
 
     salesHistory.forEach(sale => {
       const saleDate = new Date(sale.created_at);
-      const staffName = sale.staff_name || staffMap[sale.staff_id] || 'Inconnu';
+      const staffName = sale.staff_name || staffMap[sale.staff_id] || 'Unknown';
       const total = sale.total || 0;
 
       if (saleDate >= shiftStart) {
@@ -158,7 +159,7 @@ export default function StaffManagement({ supabase, branches = [] }) {
         todayData[staffName].total += total;
       } else {
         const monthKey = `${saleDate.getFullYear()}-${String(saleDate.getMonth() + 1).padStart(2, '0')}`;
-        const monthLabel = saleDate.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+        const monthLabel = saleDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 
         if (!archives[monthKey]) archives[monthKey] = { label: monthLabel, staffData: {} };
         if (!archives[monthKey].staffData[staffName]) archives[monthKey].staffData[staffName] = { count: 0, total: 0 };
@@ -177,20 +178,20 @@ export default function StaffManagement({ supabase, branches = [] }) {
       {/* SECTION 1: ACCOUNT CREATION & MANAGEMENT */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
-        {/* Formulaire Créer/Modifier */}
+        {/* Create/Edit Form */}
         <div className={`bg-white p-5 rounded-xl border shadow-sm h-fit transition-all duration-300 ${editingStaff ? 'border-blue-400 ring-2 ring-blue-50' : 'border-gray-200'}`}>
           <h3 className={`font-bold text-xs uppercase pb-2 border-b mb-4 flex items-center ${editingStaff ? 'text-blue-600' : 'text-gray-700'}`}>
             {editingStaff ? <Edit className="w-4 h-4 mr-2" /> : <UserPlus className="w-4 h-4 mr-2" />}
-            {editingStaff ? 'Modifier le Compte' : 'Créer un Compte Staff'}
+            {editingStaff ? 'Edit Staff Account' : 'Create Staff Account'}
           </h3>
           <form onSubmit={handleSaveStaff} className="space-y-3">
             <input 
-              type="text" placeholder="Nom Complet" value={formData.fullName}
+              type="text" placeholder="Full Name" value={formData.fullName}
               onChange={e => setFormData({...formData, fullName: e.target.value})}
               className="w-full border p-2.5 text-xs rounded-lg outline-none focus:ring-2 focus:ring-slate-800 bg-gray-50 focus:bg-white transition-all"
             />
             <input 
-              type="password" placeholder="Code PIN (ex: 1234)" value={formData.pinCode}
+              type="password" placeholder="PIN Code (e.g., 1234)" value={formData.pinCode}
               onChange={e => setFormData({...formData, pinCode: e.target.value})}
               className="w-full border p-2.5 text-xs rounded-lg outline-none focus:ring-2 focus:ring-slate-800 bg-gray-50 focus:bg-white transition-all"
             />
@@ -198,8 +199,8 @@ export default function StaffManagement({ supabase, branches = [] }) {
               value={formData.role} onChange={e => setFormData({...formData, role: e.target.value})}
               className="w-full border p-2.5 text-xs rounded-lg outline-none focus:ring-2 focus:ring-slate-800 bg-gray-50 focus:bg-white transition-all"
             >
-              <option value="staff">Vendeur (Staff)</option>
-              <option value="admin">Administrateur</option>
+              <option value="staff">Staff (Vendor)</option>
+              <option value="admin">Administrator</option>
             </select>
 
             {branches.length > 0 && (
@@ -207,19 +208,19 @@ export default function StaffManagement({ supabase, branches = [] }) {
                 value={formData.branchId} onChange={e => setFormData({...formData, branchId: e.target.value})}
                 className="w-full border p-2.5 text-xs rounded-lg outline-none focus:ring-2 focus:ring-slate-800 bg-gray-50 focus:bg-white transition-all"
               >
-                <option value="">Succursale Global / Siège</option>
+                <option value="">Global / Headquarters Branch</option>
                 {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
               </select>
             )}
 
             <div className="pt-2 flex flex-col gap-2">
               <button type="submit" className={`w-full text-white text-xs font-bold py-2.5 rounded-lg uppercase transition-colors shadow-sm ${editingStaff ? 'bg-blue-600 hover:bg-blue-700' : 'bg-[#0f172a] hover:bg-slate-800'}`}>
-                {editingStaff ? 'Enregistrer les modifications' : 'Créer le compte'}
+                {editingStaff ? 'Save Changes' : 'Create Account'}
               </button>
               
               {editingStaff && (
                 <button type="button" onClick={handleCancelEdit} className="w-full flex justify-center items-center gap-1.5 bg-gray-100 text-gray-600 hover:bg-gray-200 text-xs font-bold py-2.5 rounded-lg uppercase transition-colors">
-                  <XCircle className="w-3.5 h-3.5" /> Annuler l'édition
+                  <XCircle className="w-3.5 h-3.5" /> Cancel Edit
                 </button>
               )}
             </div>
@@ -230,10 +231,10 @@ export default function StaffManagement({ supabase, branches = [] }) {
         <div className="lg:col-span-2 bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
           <div className="pb-2 border-b mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <h3 className="font-bold text-xs uppercase text-gray-700 flex items-center">
-              <span>Comptes Existants</span>
+              <span>Existing Accounts</span>
             </h3>
             <span className="text-[10px] text-orange-600 bg-orange-50 px-2 py-1 rounded-md flex items-center gap-1 font-semibold border border-orange-100">
-              <ShieldAlert className="w-3 h-3" /> Édition / Désactivation protégées par code PIN
+              <ShieldAlert className="w-3 h-3" /> Edit / Deactivation protected by PIN code
             </span>
           </div>
           
@@ -241,10 +242,10 @@ export default function StaffManagement({ supabase, branches = [] }) {
             <table className="w-full text-left text-xs whitespace-nowrap">
               <thead className="bg-gray-50 border-b">
                 <tr>
-                  <th className="p-3 font-semibold text-gray-600">Nom</th>
-                  <th className="p-3 font-semibold text-gray-600">Code PIN</th>
-                  <th className="p-3 font-semibold text-gray-600">Rôle</th>
-                  <th className="p-3 font-semibold text-gray-600">Statut</th>
+                  <th className="p-3 font-semibold text-gray-600">Name</th>
+                  <th className="p-3 font-semibold text-gray-600">PIN Code</th>
+                  <th className="p-3 font-semibold text-gray-600">Role</th>
+                  <th className="p-3 font-semibold text-gray-600">Status</th>
                   <th className="p-3 font-semibold text-gray-600 text-right">Actions</th>
                 </tr>
               </thead>
@@ -260,22 +261,22 @@ export default function StaffManagement({ supabase, branches = [] }) {
                     </td>
                     <td className="p-3">
                       {staff.is_active ? 
-                        <span className="text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-1 rounded flex items-center w-fit font-semibold"><UserCheck className="w-3 h-3 mr-1"/> Actif</span> : 
-                        <span className="text-red-700 bg-red-50 border border-red-100 px-2 py-1 rounded flex items-center w-fit font-semibold"><UserX className="w-3 h-3 mr-1"/> Inactif</span>
+                        <span className="text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-1 rounded flex items-center w-fit font-semibold"><UserCheck className="w-3 h-3 mr-1"/> Active</span> : 
+                        <span className="text-red-700 bg-red-50 border border-red-100 px-2 py-1 rounded flex items-center w-fit font-semibold"><UserX className="w-3 h-3 mr-1"/> Inactive</span>
                       }
                     </td>
                     <td className="p-3 text-right">
                       <div className="flex items-center justify-end gap-2">
-                        {/* Bouton Modifier */}
+                        {/* Edit Button */}
                         <button 
                           onClick={() => handleStartEdit(staff)} 
                           className="p-1.5 rounded-md bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white transition-colors border border-blue-100 flex items-center gap-1 group"
-                          title="Modifier (PIN requis)"
+                          title="Edit (PIN required)"
                         >
                           <Edit className="w-3.5 h-3.5" />
                         </button>
                         
-                        {/* Bouton Activer/Désactiver */}
+                        {/* Toggle Status Button */}
                         {staff.role !== 'admin' && (
                           <button 
                             onClick={() => toggleStaffStatus(staff.id, staff.is_active)} 
@@ -284,7 +285,7 @@ export default function StaffManagement({ supabase, branches = [] }) {
                                 ? 'bg-red-50 text-red-600 border-red-100 hover:bg-red-600 hover:text-white' 
                                 : 'bg-emerald-50 text-emerald-600 border-emerald-100 hover:bg-emerald-600 hover:text-white'
                             }`}
-                            title={staff.is_active ? "Désactiver (PIN requis)" : "Activer (PIN requis)"}
+                            title={staff.is_active ? "Deactivate (PIN required)" : "Activate (PIN required)"}
                           >
                             {staff.is_active ? <UserX className="w-3.5 h-3.5" /> : <UserCheck className="w-3.5 h-3.5" />}
                           </button>
@@ -303,23 +304,23 @@ export default function StaffManagement({ supabase, branches = [] }) {
       <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
         <h3 className="font-bold text-xs uppercase text-gray-700 pb-2 border-b mb-4 flex items-center">
           <Clock className="w-4 h-4 mr-2 text-orange-500" /> 
-          Ventes du Jour (Depuis 06:00 AM)
+          Today's Sales (Since 06:00 AM)
         </h3>
         
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           {Object.keys(todayStats).length > 0 ? Object.entries(todayStats).map(([name, data]) => (
             <div key={name} className="p-4 border rounded-xl bg-orange-50/50 border-orange-100 text-center hover:shadow-md transition-shadow">
               <p className="text-[10px] text-gray-500 font-bold uppercase">{name}</p>
-              <p className="text-lg font-black text-gray-800">{data.total.toLocaleString()} FCFA</p>
+              <p className="text-lg font-black text-gray-800">#{data.total.toLocaleString()}</p>
               <p className="text-[10px] text-gray-400">{data.count} transaction(s)</p>
             </div>
           )) : (
-            <p className="text-xs text-gray-400 italic col-span-full bg-gray-50 p-3 rounded-lg border border-dashed">Aucune vente enregistrée depuis 6h00.</p>
+            <p className="text-xs text-gray-400 italic col-span-full bg-gray-50 p-3 rounded-lg border border-dashed">No sales recorded since 6:00 AM.</p>
           )}
         </div>
 
         <h3 className="font-bold text-xs uppercase text-gray-700 pb-2 border-b mb-4 flex items-center mt-8">
-          <Folder className="w-4 h-4 mr-2 text-gray-500" /> Archives Mensuelles des Vendeurs
+          <Folder className="w-4 h-4 mr-2 text-gray-500" /> Staff Monthly Archives
         </h3>
         <div className="space-y-3">
           {Object.entries(monthlyArchives).length > 0 ? Object.entries(monthlyArchives).map(([monthKey, archive]) => {
@@ -336,8 +337,8 @@ export default function StaffManagement({ supabase, branches = [] }) {
                       <div key={name} className="flex justify-between items-center p-3 border rounded-lg bg-gray-50/50 hover:bg-white hover:border-gray-300 transition-colors">
                         <span className="font-bold text-xs text-gray-800">{name}</span>
                         <div className="text-right">
-                          <span className="block font-black text-sm text-gray-700">{data.total.toLocaleString()} FCFA</span>
-                          <span className="block text-[10px] text-gray-500">{data.count} ventes</span>
+                          <span className="block font-black text-sm text-gray-700">#{data.total.toLocaleString()}</span>
+                          <span className="block text-[10px] text-gray-500">{data.count} sales</span>
                         </div>
                       </div>
                     ))}
@@ -346,12 +347,12 @@ export default function StaffManagement({ supabase, branches = [] }) {
               </div>
             );
           }) : (
-            <p className="text-xs text-gray-400 italic bg-gray-50 p-3 rounded-lg border border-dashed">Aucune archive mensuelle disponible pour le moment.</p>
+            <p className="text-xs text-gray-400 italic bg-gray-50 p-3 rounded-lg border border-dashed">No monthly archives available at the moment.</p>
           )}
         </div>
       </div>
 
-      {/* 🔒 MODAL DE SÉCURITÉ CODE PIN ADMIN */}
+      {/* 🔒 ADMIN PIN SECURITY MODAL */}
       {isPinModalOpen && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-xl max-w-sm w-full p-5 shadow-2xl border border-gray-100 animate-in fade-in zoom-in duration-150">
@@ -360,8 +361,8 @@ export default function StaffManagement({ supabase, branches = [] }) {
                 <Key className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="font-bold text-xs uppercase text-gray-800">Sécurité Administrateur</h3>
-                <p className="text-[11px] text-gray-500">Autorisation requise pour cette action</p>
+                <h3 className="font-bold text-xs uppercase text-gray-800">Administrator Security</h3>
+                <p className="text-[11px] text-gray-500">Authorization required for this action</p>
               </div>
             </div>
 
@@ -369,7 +370,6 @@ export default function StaffManagement({ supabase, branches = [] }) {
               <div>
                 <input
                   type="password"
-                  autoFocus
                   placeholder="••••"
                   value={adminPinInput}
                   onChange={(e) => setAdminPinInput(e.target.value)}
@@ -386,13 +386,13 @@ export default function StaffManagement({ supabase, branches = [] }) {
                   onClick={() => setIsPinModalOpen(false)}
                   className="w-1/2 py-2.5 bg-gray-100 text-gray-600 hover:bg-gray-200 text-xs font-bold rounded-lg uppercase transition-colors"
                 >
-                  Annuler
+                  Cancel
                 </button>
                 <button
                   type="submit"
                   className="w-1/2 py-2.5 bg-[#0f172a] text-white hover:bg-slate-800 text-xs font-bold rounded-lg uppercase transition-colors shadow-sm"
                 >
-                  Valider
+                  Confirm
                 </button>
               </div>
             </form>
