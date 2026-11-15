@@ -10,7 +10,7 @@ export default function StaffManagement({ supabase, branches = [] }) {
   const [formData, setFormData] = useState({ fullName: '', pinCode: '', role: 'staff', branchId: '' });
   const [editingStaff, setEditingStaff] = useState(null);
 
-  // Modal Security State (Replaces window.prompt)
+  // Modal Security State
   const [isPinModalOpen, setIsPinModalOpen] = useState(false);
   const [adminPinInput, setAdminPinInput] = useState('');
   const [pinError, setPinError] = useState('');
@@ -38,7 +38,7 @@ export default function StaffManagement({ supabase, branches = [] }) {
     if (!error && data) setSalesHistory(data);
   };
 
-  // 🔒 Admin Authentication Trigger using useRef for mobile stability
+  // 🔒 Admin Authentication Trigger
   const requestAdminAuth = (actionCallback) => {
     setAdminPinInput('');
     setPinError('');
@@ -46,11 +46,11 @@ export default function StaffManagement({ supabase, branches = [] }) {
     setIsPinModalOpen(true);
   };
 
-  // 🔒 PIN Verification inside Modal (Fixed with input blur for iOS Chrome compatibility)
+  // 🔒 PIN Verification with mobile Chrome safety blur and rendering delay
   const handleVerifyAdminPin = (e) => {
     e.preventDefault();
 
-    // Blur active input to dismiss iOS virtual keyboard smoothly and prevent Chrome white screen crash
+    // Explicitly blur the active password input to dismiss the mobile keyboard safely
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
@@ -62,16 +62,17 @@ export default function StaffManagement({ supabase, branches = [] }) {
       return;
     }
 
+    // Close the modal first
     setIsPinModalOpen(false);
     
-    // Safely delay state execution to let iOS Chrome finish keyboard dismissal animation
+    // Defer the state change execution slightly so Google Chrome finishes its keyboard animation
     setTimeout(() => {
       if (pendingActionRef.current) {
         const callback = pendingActionRef.current;
         pendingActionRef.current = null;
         callback();
       }
-    }, 100);
+    }, 150);
   };
 
   // --- STAFF ACTIONS ---
